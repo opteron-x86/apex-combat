@@ -5,7 +5,7 @@ Update it at the end of every session: mark completed work, record new
 decisions with their evidence, and rewrite "Next steps" so a fresh session
 can resume without re-deriving context.
 
-Last updated: 2026-10-31 (session: stamina features implemented + shipped)
+Last updated: 2026-10-31 (session: bow pullback drain fix shipped)
 
 ## Project
 
@@ -16,7 +16,7 @@ stamina features from in-game testing, leading toward milestone 0.2
 (issue #6: poise + For Honor counterattacks).
 
 - Repo: `https://github.com/opteron-x86/apex-combat`
-- Branch: `feat/stamina-parry-foundation` @ `29dcb5f` (pushed, tree clean
+- Branch: `feat/stamina-parry-foundation` @ `f0ab372` (pushed, tree clean
   at time of last session end)
 - Base: `b11dc99`
 - Do NOT commit unless explicitly asked; the user has authorized commits
@@ -54,8 +54,11 @@ commit:
 
 1. **Bow state**: `actor->AsActorState()->GetAttackState()` returns
    `ATTACK_STATE_ENUM` (`RE/A/ActorState.h:156`), values include
-   `kBowDraw=8`, `kBowDrawn=10`, `kBowReleasing=11` (`ActorState.h:23-37`).
-   Plain struct read — VR-safe.
+   `kBowDraw=8`, `kBowAttached=9`, `kBowDrawn=10`, `kBowReleasing=11`
+   (`ActorState.h:23-37`). Empirical (user's setup, 2026-10-31): the
+   pullback animation runs mostly as `kBowAttached`, not `kBowDraw` —
+   `kBowDraw` is only a brief moment at draw start. Plain struct read —
+   VR-safe.
 2. **Per-frame hook**: `Actor::Update(float)` is vtable slot `0xAD`
    (`RE/A/Actor.h:401`), marked `SKYRIM_REL_VR_VIRTUAL` (slot exists in
    VR at the same index). `PlayerCharacter` does NOT override
@@ -144,10 +147,10 @@ diagnostic behavior are already generic.
   apply `UpdateRegenDelay(kStamina, config.dodgeRegenDelaySeconds)`.
   No dodge charge.
 - **Bow drain**: new `UpdateHooks` struct installing
-  `write_vfunc(0xAD, ...)` on `VTABLE_Character[0]` and
-  `VTABLE_PlayerCharacter[0]` (store original pointer, call it first).
-  In the hook: if `StableGameplay() && EligibleActor(actor)` and
-  `GetAttackState()` is `kBowDraw` or `kBowDrawn`:
+   `write_vfunc(0xAD, ...)` on `VTABLE_Character[0]` and
+   `VTABLE_PlayerCharacter[0]` (store original pointer, call it first).
+   In the hook: if `StableGameplay() && EligibleActor(actor)` and
+   `GetAttackState()` is `kBowDraw`, `kBowAttached`, or `kBowDrawn`:
   drain `config.bowDrawDrainPerSecond * delta` via
   `DamageActorValue(kStamina, ...)` and re-apply
   `UpdateRegenDelay(kStamina, config.regenDelaySeconds)` each frame so
@@ -196,8 +199,9 @@ diagnostic behavior are already generic.
     before the `ManageAttack || Ranged` early return;
     `UpdateHooks<Player>` vtable slot 0xAD hook on `Character` +
     `PlayerCharacter` draining `bowDrawDrainPerSecond × delta` while
-    `GetAttackState()` ∈ {kBowDraw, kBowDrawn}; capabilities log
-    extended with `bow draw drain={}`.
+    `GetAttackState()` ∈ {kBowDraw, kBowAttached, kBowDrawn}
+    (kBowAttached added in follow-up commit `f0ab372`, see below);
+    capabilities log extended with `bow draw drain={}`.
   - INI + README config table updated with all new keys.
   - Tests: `perWeaponCostsAndDualWield` in CoreTests; extended
     defaults/full/limits/invalid coverage in ConfigurationTests.
@@ -212,12 +216,30 @@ diagnostic behavior are already generic.
     `stamina.exhaustionrecoverydelayseconds` — this key was the cause
     of the initial configuration test failure (isolated with a
     standalone repro printing the diagnostics).
+- **In-game validation round 1 (user feedback, 2026-10-31)**: per-weapon
+  costs, dual-wield multiplier, other attacks, and dodge all confirmed
+  working in-game. Bow behavior needed a fix (below).
+- **Bow pullback drain fix (commit `f0ab372`, pushed 2026-10-31)** —
+  user reported: no drain during the draw pullback animation, only a
+  ~1-stamina drop at draw start, then 5/sec at full draw. Root cause:
+  the pullback runs as `kBowAttached` (state 9), which the drain
+  condition didn't cover; the 1-point drop was our drain during the
+  brief `kBowDraw` frames at draw start. Fix: added `kBowAttached` to
+  the `UpdateHooks` drain condition — now drains continuously at
+  `bowDrawDrainPerSecond` from draw start through the pullback and the
+  full-draw hold. Release states (`kBowReleasing`/`kBowReleased`)
+  remain excluded. Note: drain still uses the single
+  `stamina.bowdrawdrainpersecond` value for both pullback and full
+  draw (user's wording implied one rate; if they want a separate
+  pullback rate, add a new INI key).
+  - Validation: `tools/build.sh native-tests` all green; `local-cross`
+    rebuilt; `tools/audit-dll.py` clean; re-packaged `dist/` (dll sha256
+    `849120e7...`, differs from the `29dcb5f` build `6c21e5e7...`).
 
 ## Next steps (execute in order)
 
-1. Wait for user in-game validation of the new stamina behaviors
-   (per-weapon costs, dual-wield multiplier, exhaustion + dodge
-   delays, bow-draw drain).
+1. Wait for user in-game validation of the bow pullback drain (commit
+   `f0ab372` build) and the remaining stamina behaviors.
 2. Deploy the fresh build to MO2 when the user decides (deploy plan
    and rollback are documented above; preview only so far).
 3. Milestone 0.2 (issue #6): poise + For Honor counterattacks.
@@ -229,5 +251,12 @@ diagnostic behavior are already generic.
   after this stamina round.
 - Player-only vs NPC scope for bow drain: default drains both player
   and NPCs; if user wants player-only, gate with `IsPlayerRef()`.
-- In-game validation of all new behaviors still required from the user
-  after build+deploy.
+- Separate pullback-vs-full-draw bow drain rates: current build uses
+  one rate (`stamina.bowdrawdrainpersecond`) for the whole draw; add a
+  second key only if the user asks.
+- Watch for idle-hold drain: `kBowAttached` is assumed to be a
+  transient pullback state; if the user reports stamina draining while
+  idling with a nocked bow, gate the `kBowAttached` branch behind a
+  seen-draw-start latch.
+- In-game validation of the bow pullback fix still required from the
+  user after build+deploy.
