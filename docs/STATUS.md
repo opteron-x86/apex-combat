@@ -5,7 +5,7 @@ Update it at the end of every session: mark completed work, record new
 decisions with their evidence, and rewrite "Next steps" so a fresh session
 can resume without re-deriving context.
 
-Last updated: 2026-10-31 (session: stamina features round 2)
+Last updated: 2026-10-31 (session: stamina features implemented + shipped)
 
 ## Project
 
@@ -16,8 +16,8 @@ stamina features from in-game testing, leading toward milestone 0.2
 (issue #6: poise + For Honor counterattacks).
 
 - Repo: `https://github.com/opteron-x86/apex-combat`
-- Branch: `feat/stamina-parry-foundation` @ `2430775` (pushed, tree clean at
-  time of last session start)
+- Branch: `feat/stamina-parry-foundation` @ `29dcb5f` (pushed, tree clean
+  at time of last session end)
 - Base: `b11dc99`
 - Do NOT commit unless explicitly asked; the user has authorized commits
   so far (commit + push after each feature round).
@@ -176,24 +176,51 @@ diagnostic behavior are already generic.
   dedup ledger (`suppress-parried-contact`, `duplicate-parry-contact`),
   runtime builds + archives (`dist/Apex-Combat-0.1.0.zip`), MO2 deploy
   preview. All in commit `2430775`, pushed.
-- `RestoreActorValue` 2-arg fix; native tests green (3 CTest suites +
-  7 tools tests, ASan/UBSan); DLL audit clean (VR layout on, exports
-  OK, release CRT).
-- README.md + THIRD_PARTY_NOTICES.md written.
-- gh auth + SSH push verified working.
+- `RestoreActorValue` 2-arg fix; README.md + THIRD_PARTY_NOTICES.md
+  written; gh auth + SSH push verified working.
+- **Stamina feature round (commit `29dcb5f`, pushed 2026-10-31)** —
+  implemented exactly per the design section above; no deviations
+  except where noted:
+  - Core: `AttackKind::Dagger/OneHandedAxe/OneHandedMace/DualWield`;
+    `Settings` cost/multiplier fields; `beginAttack(..., float
+    customCost = 0.0F)` (DualWield uses customCost; invalid/NaN/inf/
+    <= 0 → InvalidInput); unmapped weapon kinds fall back to
+    `LightOneHanded`.
+  - Configuration: 7 new `[Stamina]` keys registered in `knownKey()`
+    and `apply()` (ranges: costs 0..10000, multiplier 1..10, delays
+    0..10, `bowdrawdrainpersecond` 0..10000).
+  - Runtime: full per-weapon `Kind()` classification (DualWield =
+    averaged per-hand cost × `dualWieldMultiplier`); exhaustion
+    `UpdateRegenDelay` on false→true flips (Begin, Commit
+    `observeStamina`, PreHit successfulBlock); dodge event delay
+    before the `ManageAttack || Ranged` early return;
+    `UpdateHooks<Player>` vtable slot 0xAD hook on `Character` +
+    `PlayerCharacter` draining `bowDrawDrainPerSecond × delta` while
+    `GetAttackState()` ∈ {kBowDraw, kBowDrawn}; capabilities log
+    extended with `bow draw drain={}`.
+  - INI + README config table updated with all new keys.
+  - Tests: `perWeaponCostsAndDualWield` in CoreTests; extended
+    defaults/full/limits/invalid coverage in ConfigurationTests.
+  - Validation: `tools/build.sh native-tests` all green (3 CTest
+    suites + 7 tools tests, ASan/UBSan); `local-cross` rebuilt
+    (`build/windows-local/ApexCombat.dll`); `tools/audit-dll.py`
+    clean (x64, 3 SKSE exports, expected imports); `tools/package.py`
+    re-packaged `dist/` (runtime layouts SE/AE/VR).
+  - Bug fixed during testing: `knownKey`/`apply` had a typo
+    `stamina.exhaustionrecoverdelayseconds` (missing "y" in
+    "recovery"); corrected to
+    `stamina.exhaustionrecoverydelayseconds` — this key was the cause
+    of the initial configuration test failure (isolated with a
+    standalone repro printing the diagnostics).
 
 ## Next steps (execute in order)
 
-1. Implement Core changes (CombatRules.h/.cpp per design above).
-2. Implement Configuration changes (Configuration.h/.cpp).
-3. Implement Runtime changes (Runtime.cpp: classification, exhaustion
-   delay, dodge delay, UpdateHooks bow drain).
-4. Update `package/SKSE/Plugins/ApexCombat.ini` + README config table.
-5. Extend tests; run `tools/build.sh native-tests`.
-6. Rebuild `local-cross`, audit, `tools/package.py`.
-7. Commit (user has authorized) and push.
-8. Update this document: move steps to Completed, record test results
-   and any deviations from the design.
+1. Wait for user in-game validation of the new stamina behaviors
+   (per-weapon costs, dual-wield multiplier, exhaustion + dodge
+   delays, bow-draw drain).
+2. Deploy the fresh build to MO2 when the user decides (deploy plan
+   and rollback are documented above; preview only so far).
+3. Milestone 0.2 (issue #6): poise + For Honor counterattacks.
 
 ## Open items / parked
 
