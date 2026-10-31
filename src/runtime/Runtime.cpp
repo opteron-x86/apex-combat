@@ -323,7 +323,11 @@ struct UpdateHooks {
             !EligibleActor(actor)) return;
         auto* actorState = actor->AsActorState();
         const auto attack = actorState ? actorState->GetAttackState() : RE::ATTACK_STATE_ENUM::kNone;
-        if (attack != RE::ATTACK_STATE_ENUM::kBowDraw && attack != RE::ATTACK_STATE_ENUM::kBowDrawn) return;
+        // kBowDraw/kBowAttached cover the pullback animation; kBowDrawn is the
+        // full-draw hold. Release states deliberately do not drain.
+        if (attack != RE::ATTACK_STATE_ENUM::kBowDraw &&
+            attack != RE::ATTACK_STATE_ENUM::kBowAttached &&
+            attack != RE::ATTACK_STATE_ENUM::kBowDrawn) return;
         const float drain = config.bowDrawDrainPerSecond * delta;
         actor->AsActorValueOwner()->DamageActorValue(RE::ActorValue::kStamina, drain);
         auto* process = actor->GetActorRuntimeData().currentProcess;
