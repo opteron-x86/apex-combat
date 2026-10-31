@@ -10,13 +10,18 @@ using ActorId = std::uint32_t;
 using EventToken = std::uint64_t;
 using TimeMs = std::int64_t;
 
-enum class AttackKind { LightOneHanded, LightTwoHanded, Unarmed, Power };
+enum class AttackKind { LightOneHanded, LightTwoHanded, Unarmed, Power, Dagger, OneHandedAxe, OneHandedMace, DualWield };
 enum class Affordability { PositiveStamina, FullCost };
 
 struct Settings {
     float lightOneHandedCost{20.0F};
     float lightTwoHandedCost{33.0F};
     float unarmedCost{10.0F};
+    float daggerCost{10.0F};
+    float axeCost{25.0F};
+    float maceCost{25.0F};
+    // Multiplier applied to the averaged per-hand cost of a dual-wield attack.
+    float dualWieldMultiplier{1.6F};
     Affordability affordability{Affordability::PositiveStamina};
     // When false, power admission uses the supplied cost, but the engine owns its debit.
     bool chargePowerAttacks{false};
@@ -85,7 +90,8 @@ public:
     void setSettings(Settings settings);
 
     AttackResult beginAttack(ActorId actor, EventToken stage, AttackKind kind,
-                             float stamina, TimeMs now, float vanillaPowerCost = 0.0F);
+                             float stamina, TimeMs now, float vanillaPowerCost = 0.0F,
+                             float customCost = 0.0F);
     AttackResult commitAttack(ActorId actor, EventToken stage, float stamina, TimeMs now);
     // Cancellation invalidates a pending stage. Committed attacks are never refunded.
     bool cancelAttack(ActorId actor, EventToken stage, TimeMs now);

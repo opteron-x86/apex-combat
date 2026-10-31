@@ -35,6 +35,7 @@ struct ActorState {
     bool committed{false};
     bool denied{false};
     bool nextStage{true};
+    bool exhausted{false};
     TimeMs lastSeen{0};
     Core::ParryContacts contacts;
 };
@@ -99,26 +100,69 @@ ActorState& State(RE::Actor* actor, TimeMs now) {
     return state;
 }
 
-bool Ranged(RE::Actor* actor) {
-    auto* form = actor->GetEquippedObject(false);
-    auto* weapon = form ? form->As<RE::TESObjectWEAP>() : nullptr;
+// Applies the exhaustion recovery delay exactly on a false-true flip of the
+// observed exhaustion state. Caller must hold stateMutex.
+void ObserveExhaustion(RE::Actor* actor, bool exhausted, TimeMs now) {
+    auto& state = State(actor, now);
+    const bool entered = exhausted && !state.exhausted;
+    state.exhausted = exhausted;
+    if (entered) {
+        auto* process = actor->GetActorRuntimeData().currentProcess;
+        if (process) process->UpdateRegenDelay(RE::ActorValue::kStamina, config.exhaustionRecoveryDelaySeconds);
+        Trace(actor, "exhaustion-delay", 0, config.exhaustionRecoveryDelaySeconds);
+    }
+}
+
+bool RangedWeapon(RE::TESObjectWEAP* weapon) {
     if (!weapon) return false;
     auto type = weapon->GetWeaponType();
     return type == RE::WEAPON_TYPE::kBow || type == RE::WEAPON_TYPE::kCrossbow || type == RE::WEAPON_TYPE::kStaff;
 }
 
-AttackKind Kind(RE::Actor* actor, bool powerHint = false) {
+bool Ranged(RE::Actor* actor) {
+    auto* form = actor->GetEquippedObject(false);
+    return RangedWeapon(form ? form->As<RE::TESObjectWEAP>() : nullptr);
+}
+
+// Cost of one swing with a weapon of this type, from the current settings.
+float WeaponTypeCost(RE::WEAPON_TYPE type) {
+    const auto& settings = rules.settings();
+    switch (type) {
+    case RE::WEAPON_TYPE::kOneHandDagger: return settings.daggerCost;
+    case RE::WEAPON_TYPE::kOneHandAxe: return settings.axeCost;
+    case RE::WEAPON_TYPE::kOneHandMace: return settings.maceCost;
+    case RE::WEAPON_TYPE::kTwoHandSword:
+    case RE::WEAPON_TYPE::kTwoHandAxe: return settings.lightTwoHandedCost;
+    case RE::WEAPON_TYPE::kHandToHandMelee: return settings.unarmedCost;
+    default: return settings.lightOneHandedCost;
+    }
+}
+
+bool MeleeWeapon(RE::TESObjectWEAP* weapon) { return weapon && !RangedWeapon(weapon); }
+
+AttackKind Kind(RE::Actor* actor, bool powerHint, float& customCost) {
     if (powerHint || actor->IsPowerAttacking()) return AttackKind::Power;
+    auto* rightForm = actor->GetEquippedObject(false);
+    auto* right = rightForm ? rightForm->As<RE::TESObjectWEAP>() : nullptr;
+    auto* leftForm = actor->GetEquippedObject(true);
+    auto* left = leftForm ? leftForm->As<RE::TESObjectWEAP>() : nullptr;
+    if (MeleeWeapon(right) && MeleeWeapon(left)) {
+        customCost = (WeaponTypeCost(right->GetWeaponType()) + WeaponTypeCost(left->GetWeaponType())) *
+                     0.5F * rules.settings().dualWieldMultiplier;
+        return AttackKind::DualWield;
+    }
     auto* entry = actor->GetAttackingWeapon();
     auto* weapon = entry && entry->object ? entry->object->As<RE::TESObjectWEAP>() : nullptr;
-    if (!weapon) {
-        auto* form = actor->GetEquippedObject(false);
-        weapon = form ? form->As<RE::TESObjectWEAP>() : nullptr;
-    }
-    if (!weapon || weapon->GetWeaponType() == RE::WEAPON_TYPE::kHandToHandMelee) return AttackKind::Unarmed;
-    if (weapon->GetWeaponType() == RE::WEAPON_TYPE::kTwoHandSword || weapon->GetWeaponType() == RE::WEAPON_TYPE::kTwoHandAxe)
+    if (!MeleeWeapon(weapon)) weapon = MeleeWeapon(right) ? right : (MeleeWeapon(left) ? left : nullptr);
+    if (!weapon) return AttackKind::Unarmed;
+    auto type = weapon->GetWeaponType();
+    if (type == RE::WEAPON_TYPE::kOneHandDagger) return AttackKind::Dagger;
+    if (type == RE::WEAPON_TYPE::kOneHandAxe) return AttackKind::OneHandedAxe;
+    if (type == RE::WEAPON_TYPE::kOneHandMace) return AttackKind::OneHandedMace;
+    if (type == RE::WEAPON_TYPE::kTwoHandSword || type == RE::WEAPON_TYPE::kTwoHandAxe)
         return AttackKind::LightTwoHanded;
-    return AttackKind::LightOneHanded;
+    if (type == RE::WEAPON_TYPE::kHandToHandMelee) return AttackKind::Unarmed;
+    return AttackKind::LightOneHanded;  // Sword plus legacy fallback for unmapped types.
 }
 
 bool AttackRequest(std::string_view event) {
@@ -132,11 +176,14 @@ bool Begin(RE::Actor* actor, bool power, TimeMs now) {
     std::scoped_lock lock(stateMutex);
     Prune(now);
     auto& state = State(actor, now);
+    float customCost = 0.0F;
+    const auto kind = Kind(actor, power, customCost);
     // Power attack costs remain owned by the game. Positive stamina is required.
-    auto result = rules.beginAttack(actor->GetFormID(), ++state.stage, Kind(actor, power), Stamina(actor), now);
+    auto result = rules.beginAttack(actor->GetFormID(), ++state.stage, kind, Stamina(actor), now, 0.0F, customCost);
     state.committed = false;
     state.denied = !result.accepted;
     state.nextStage = false;
+    ObserveExhaustion(actor, result.exhausted, now);
     Trace(actor, result.accepted ? "admit" : "reject", state.stage, result.nominalCost, static_cast<int>(result.reason));
     return result.accepted;
 }
@@ -163,7 +210,7 @@ bool Commit(RE::Actor* actor, TimeMs now) {
         auto* process = actor->GetActorRuntimeData().currentProcess;
         if (process) process->UpdateRegenDelay(RE::ActorValue::kStamina, config.regenDelaySeconds);
     }
-    rules.observeStamina(actor->GetFormID(), Stamina(actor), now);
+    ObserveExhaustion(actor, rules.observeStamina(actor->GetFormID(), Stamina(actor), now).exhausted, now);
     Trace(actor, result.engineOwnsCost ? "commit-engine-cost" : "commit", state.stage, result.staminaDebit);
     return true;
 }
@@ -185,6 +232,17 @@ bool IncomingEvent(RE::Actor* actor, std::string_view event) {
     if (event == "blockstartout" || event == "sbf_blockstart") BlockEvent(actor, true, now);
     else if (event == "blockstop" || event == "blockstopout" || event == "sbf_blockstop" ||
         event == "staggerstart" || event == "recoilstart" || event == "weaponsheathe") BlockEvent(actor, false, now);
+
+    // A dodge starts its own regen delay regardless of admission scope.
+    // Matches "*dodge*start*" style animation events (e.g. DMCO); no dodge charge.
+    if (event.find("dodge") != std::string_view::npos && event.find("start") != std::string_view::npos) {
+        auto* process = actor->GetActorRuntimeData().currentProcess;
+        if (process) {
+            process->UpdateRegenDelay(RE::ActorValue::kStamina, config.dodgeRegenDelaySeconds);
+            Trace(actor, "dodge-delay", 0, config.dodgeRegenDelaySeconds);
+        }
+        return true;
+    }
 
     if (!ManageAttack(actor) || Ranged(actor)) return true;
     if (event == "attackwinstart" || event == "mco_winopen") {
@@ -251,6 +309,34 @@ struct GraphHooks {
     }
 };
 
+// Per-frame Actor::Update hook (vtable slot 0xAD): drains stamina while a bow
+// is drawn and keeps regen paused for the whole hold. Runs on the game thread;
+// it reads no shared runtime state, so no lock is needed.
+template<bool Player>
+struct UpdateHooks {
+    static inline REL::Relocation<void (*)(RE::Character*, float)> update;
+
+    static void Hook(RE::Character* character, float delta) {
+        update(character, delta);
+        auto* actor = character ? static_cast<RE::Actor*>(character) : nullptr;
+        if (delta <= 0.0F || config.bowDrawDrainPerSecond <= 0.0F || !StableGameplay() ||
+            !EligibleActor(actor)) return;
+        auto* actorState = actor->AsActorState();
+        const auto attack = actorState ? actorState->GetAttackState() : RE::ATTACK_STATE_ENUM::kNone;
+        if (attack != RE::ATTACK_STATE_ENUM::kBowDraw && attack != RE::ATTACK_STATE_ENUM::kBowDrawn) return;
+        const float drain = config.bowDrawDrainPerSecond * delta;
+        actor->AsActorValueOwner()->DamageActorValue(RE::ActorValue::kStamina, drain);
+        auto* process = actor->GetActorRuntimeData().currentProcess;
+        if (process) process->UpdateRegenDelay(RE::ActorValue::kStamina, config.regenDelaySeconds);
+        Trace(actor, "bow-draw", 0, drain);
+    }
+
+    static void Install() {
+        REL::Relocation<std::uintptr_t> table{Player ? RE::VTABLE_PlayerCharacter[0] : RE::VTABLE_Character[0]};
+        update = table.write_vfunc(0xAD, Hook);
+    }
+};
+
 bool WithinBlockCone(RE::Actor* defender, RE::Actor* attacker) {
     const auto delta = attacker->GetPosition() - defender->GetPosition();
     const float distance = std::hypot(delta.x, delta.y);
@@ -305,6 +391,7 @@ PRECISION_API::PreHitCallbackReturn PreHit(const PRECISION_API::PrecisionHitData
         }
         auto result = rules.successfulBlock(defender->GetFormID(), ++defenderState.hit,
             Stamina(defender), MaximumStamina(defender), now);
+        ObserveExhaustion(defender, result.exhausted, now);
         if (!result.perfect) return output;
         if (strike && !attackerState.contacts.remember(strike, defender->GetFormID())) {
             // A duplicate contact for the same strike/defender cannot refund twice.
@@ -390,13 +477,16 @@ bool InitializeRuntime() {
     if (!config.enabled) { SKSE::log::info("Disabled in configuration."); return true; }
     GraphHooks<false>::Install();
     GraphHooks<true>::Install();
+    UpdateHooks<false>::Install();
+    UpdateHooks<true>::Install();
     PatchAttackIdles();
     if (auto* scripts = RE::ScriptEventSourceHolder::GetSingleton()) scripts->AddEventSink<RE::TESObjectLoadedEvent>(&lifecycle);
     if (auto* ui = RE::UI::GetSingleton()) ui->AddEventSink<RE::MenuOpenCloseEvent>(&lifecycle);
     auto* api = static_cast<PRECISION_API::IVPrecision1*>(PRECISION_API::RequestPluginAPI(PRECISION_API::InterfaceVersion::V1));
     if (api) precisionReady = api->AddPreHitCallback(SKSE::GetPluginHandle(), PreHit) == PRECISION_API::APIResult::OK;
-    SKSE::log::info("Capabilities: graph stamina=true; attack IDLE gates={}; Precision melee parry={}; VR={}",
-        config.patchAttackIdles, precisionReady, REL::Module::IsVR());
+    SKSE::log::info("Capabilities: graph stamina=true; attack IDLE gates={}; Precision melee parry={}; "
+        "bow draw drain={}; VR={}",
+        config.patchAttackIdles, precisionReady, config.bowDrawDrainPerSecond, REL::Module::IsVR());
     if (!precisionReady) SKSE::log::warn("Perfect blocking requires a compatible Precision API. Stamina features remain available.");
     initialized = true;
     return true;

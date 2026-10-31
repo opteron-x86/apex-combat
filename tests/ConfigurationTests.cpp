@@ -57,8 +57,15 @@ void defaultsAndCompleteConfiguration()
     near(defaults.config.rules.lightOneHandedCost, 20);
     near(defaults.config.rules.lightTwoHandedCost, 33);
     near(defaults.config.rules.unarmedCost, 10);
+    near(defaults.config.rules.daggerCost, 10);
+    near(defaults.config.rules.axeCost, 25);
+    near(defaults.config.rules.maceCost, 25);
+    near(defaults.config.rules.dualWieldMultiplier, 1.6F);
     near(defaults.config.rules.perfectBlockRestore, 25);
     near(defaults.config.regenDelaySeconds, 0.5F);
+    near(defaults.config.dodgeRegenDelaySeconds, 0.5F);
+    near(defaults.config.exhaustionRecoveryDelaySeconds, 1.0F);
+    near(defaults.config.bowDrawDrainPerSecond, 5.0F);
     near(defaults.config.blockAngleDegrees, 120);
     check(defaults.config.rules.affordability == Core::Affordability::PositiveStamina);
     check(defaults.config.rules.perfectBlockWindowMs == 150);
@@ -73,10 +80,17 @@ patchAttackIdles=false
 [Stamina]
 lightOneHandedCost=12.5
 lightTwoHandedCost=40
-unarmedCost=0
-affordability=full
-regenDelaySeconds=2.25
-attackCommitTimeoutMs=1500
+    unarmedCost=0
+    daggerCost=7.5
+    axeCost=55
+    maceCost=60
+    dualWieldMultiplier=2.5
+    affordability=full
+    regenDelaySeconds=2.25
+    dodgeRegenDelaySeconds=1.5
+    exhaustionRecoveryDelaySeconds=3.75
+    bowDrawDrainPerSecond=12.5
+    attackCommitTimeoutMs=1500
 [PerfectBlock]
 enabled=false
 npcEnabled=0
@@ -94,8 +108,15 @@ trace=true
     near(full.config.rules.lightOneHandedCost, 12.5F);
     near(full.config.rules.lightTwoHandedCost, 40);
     near(full.config.rules.unarmedCost, 0);
+    near(full.config.rules.daggerCost, 7.5F);
+    near(full.config.rules.axeCost, 55);
+    near(full.config.rules.maceCost, 60);
+    near(full.config.rules.dualWieldMultiplier, 2.5F);
     near(full.config.rules.perfectBlockRestore, 42.5F);
     near(full.config.regenDelaySeconds, 2.25F);
+    near(full.config.dodgeRegenDelaySeconds, 1.5F);
+    near(full.config.exhaustionRecoveryDelaySeconds, 3.75F);
+    near(full.config.bowDrawDrainPerSecond, 12.5F);
     near(full.config.blockAngleDegrees, 90);
     check(full.config.rules.affordability == Core::Affordability::FullCost);
     check(full.config.rules.attackCommitTimeoutMs == 1500);
@@ -116,6 +137,9 @@ void whitespaceCommentsAndCase()
         "[Stamina]\r\n"
         "affordability = FuLl\r\n"
         "lightOneHandedCost = 1.25e2\r\n"
+        "DAGGERCOST = 8\r\n"
+        "DualWieldMultiplier = 3\r\n"
+        "BowDrawDrainPerSecond = 2.5\r\n"
         "[ PerfectBlock ]\r\n"
         "windowMS = 149\r\n"
         "[Debug]\r\n"
@@ -124,6 +148,9 @@ void whitespaceCommentsAndCase()
     check(result.config.enabled && !result.config.playerAttacks && result.config.trace);
     check(result.config.rules.affordability == Core::Affordability::FullCost);
     near(result.config.rules.lightOneHandedCost, 125);
+    near(result.config.rules.daggerCost, 8);
+    near(result.config.rules.dualWieldMultiplier, 3);
+    near(result.config.bowDrawDrainPerSecond, 2.5F);
     check(result.config.rules.perfectBlockWindowMs == 149);
 }
 
@@ -146,7 +173,14 @@ void strictNumbersAndFiniteBounds()
 lightOneHandedCost=0
 lightTwoHandedCost=10000
 unarmedCost=0.0001
+daggerCost=0
+axeCost=10000
+maceCost=10000
+dualWieldMultiplier=1
 regenDelaySeconds=10
+dodgeRegenDelaySeconds=10
+exhaustionRecoveryDelaySeconds=10
+bowDrawDrainPerSecond=10000
 attackCommitTimeoutMs=1
 [PerfectBlock]
 windowMs=1000
@@ -157,6 +191,13 @@ blockAngleDegrees=360
     check(limits.diagnostics.empty());
     near(limits.config.rules.lightOneHandedCost, 0);
     near(limits.config.rules.lightTwoHandedCost, 10000);
+    near(limits.config.rules.daggerCost, 0);
+    near(limits.config.rules.axeCost, 10000);
+    near(limits.config.rules.maceCost, 10000);
+    near(limits.config.rules.dualWieldMultiplier, 1);
+    near(limits.config.dodgeRegenDelaySeconds, 10);
+    near(limits.config.exhaustionRecoveryDelaySeconds, 10);
+    near(limits.config.bowDrawDrainPerSecond, 10000);
     check(limits.config.rules.attackCommitTimeoutMs == 1);
     check(limits.config.rules.perfectBlockWindowMs == 1000);
     near(limits.config.blockAngleDegrees, 360);
@@ -165,6 +206,13 @@ blockAngleDegrees=360
     const auto invalid = parseConfiguration(R"ini(
 [Stamina]
 regenDelaySeconds=10.01
+daggerCost=-1
+axeCost=10001
+maceCost=nan
+dualWieldMultiplier=0.99
+dodgeRegenDelaySeconds=10.01
+exhaustionRecoveryDelaySeconds=11
+bowDrawDrainPerSecond=-0.5
 attackCommitTimeoutMs=0
 affordability=anything
 [PerfectBlock]
@@ -172,8 +220,15 @@ restore=-1
 rearmDelayMs=-1
 blockAngleDegrees=0
 )ini");
-    check(invalid.diagnostics.size() == 6);
+    check(invalid.diagnostics.size() == 13);
     near(invalid.config.regenDelaySeconds, 0.5F);
+    near(invalid.config.rules.daggerCost, 10);
+    near(invalid.config.rules.axeCost, 25);
+    near(invalid.config.rules.maceCost, 25);
+    near(invalid.config.rules.dualWieldMultiplier, 1.6F);
+    near(invalid.config.dodgeRegenDelaySeconds, 0.5F);
+    near(invalid.config.exhaustionRecoveryDelaySeconds, 1.0F);
+    near(invalid.config.bowDrawDrainPerSecond, 5.0F);
     near(invalid.config.blockAngleDegrees, 120);
     near(invalid.config.rules.perfectBlockRestore, 25);
     check(invalid.config.rules.attackCommitTimeoutMs == 1000);
@@ -267,6 +322,10 @@ int main(int argc, char** argv)
         check(shipped.config.enabled && !shipped.config.rules.chargePowerAttacks);
         Core::CombatRules validated(shipped.config.rules);
         check(validated.settings().perfectBlockWindowMs == 150);
+        near(shipped.config.rules.daggerCost, 10);
+        near(shipped.config.rules.dualWieldMultiplier, 1.6F);
+        near(shipped.config.dodgeRegenDelaySeconds, 0.5F);
+        near(shipped.config.bowDrawDrainPerSecond, 5.0F);
     }
     std::cout << "Configuration: " << checks << " checks passed\n";
 }

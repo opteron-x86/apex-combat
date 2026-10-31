@@ -78,8 +78,12 @@ bool knownKey(std::string_view key)
     return key == "general.enabled" || key == "general.playerattacks" ||
            key == "general.npcattacks" || key == "general.patchattackidles" ||
            key == "stamina.lightonehandedcost" || key == "stamina.lighttwohandedcost" ||
-           key == "stamina.unarmedcost" || key == "stamina.affordability" ||
-           key == "stamina.regendelayseconds" || key == "stamina.attackcommittimeoutms" ||
+           key == "stamina.unarmedcost" || key == "stamina.daggercost" ||
+           key == "stamina.axecost" || key == "stamina.macecost" ||
+           key == "stamina.dualwieldmultiplier" || key == "stamina.affordability" ||
+           key == "stamina.regendelayseconds" || key == "stamina.dodgeregendelayseconds" ||
+            key == "stamina.exhaustionrecoverydelayseconds" ||
+           key == "stamina.bowdrawdrainpersecond" || key == "stamina.attackcommittimeoutms" ||
            key == "perfectblock.enabled" || key == "perfectblock.npcenabled" ||
            key == "perfectblock.windowms" || key == "perfectblock.restore" ||
            key == "perfectblock.rearmdelayms" || key == "perfectblock.blockangledegrees" ||
@@ -99,7 +103,18 @@ bool apply(Configuration& config, const std::string& key, std::string_view value
     if (key == "stamina.lightonehandedcost") return number(value, 0.0F, 10000.0F, rules.lightOneHandedCost);
     if (key == "stamina.lighttwohandedcost") return number(value, 0.0F, 10000.0F, rules.lightTwoHandedCost);
     if (key == "stamina.unarmedcost") return number(value, 0.0F, 10000.0F, rules.unarmedCost);
+    if (key == "stamina.daggercost") return number(value, 0.0F, 10000.0F, rules.daggerCost);
+    if (key == "stamina.axecost") return number(value, 0.0F, 10000.0F, rules.axeCost);
+    if (key == "stamina.macecost") return number(value, 0.0F, 10000.0F, rules.maceCost);
+    if (key == "stamina.dualwieldmultiplier")
+        return number(value, 1.0F, 10.0F, rules.dualWieldMultiplier);
     if (key == "stamina.regendelayseconds") return number(value, 0.0F, 10.0F, config.regenDelaySeconds);
+    if (key == "stamina.dodgeregendelayseconds")
+        return number(value, 0.0F, 10.0F, config.dodgeRegenDelaySeconds);
+    if (key == "stamina.exhaustionrecoverydelayseconds")
+        return number(value, 0.0F, 10.0F, config.exhaustionRecoveryDelaySeconds);
+    if (key == "stamina.bowdrawdrainpersecond")
+        return number(value, 0.0F, 10000.0F, config.bowDrawDrainPerSecond);
     if (key == "stamina.attackcommittimeoutms")
         return number(value, Core::TimeMs{1}, Core::TimeMs{10000}, rules.attackCommitTimeoutMs);
     if (key == "perfectblock.windowms")

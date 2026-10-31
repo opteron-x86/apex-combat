@@ -35,8 +35,15 @@ All options live in `<game>/Data/SKSE/Plugins/ApexCombat.ini`. Restart the game 
 | Stamina | `lightOneHandedCost` | `20` | One-handed light attack cost. |
 | Stamina | `lightTwoHandedCost` | `33` | Two-handed light attack cost. |
 | Stamina | `unarmedCost` | `10` | Unarmed attack cost. |
+| Stamina | `daggerCost` | `10` | Dagger light attack cost. |
+| Stamina | `axeCost` | `25` | One-handed axe light attack cost. |
+| Stamina | `maceCost` | `25` | One-handed mace light attack cost. |
+| Stamina | `dualWieldMultiplier` | `1.6` | Scales the averaged per-hand cost of a dual-wield attack. |
 | Stamina | `affordability` | `positive` | `positive`: any stamina above zero admits. `full`: the whole cost must be affordable. |
 | Stamina | `regenDelaySeconds` | `0.5` | Stamina regen delay after a debit. |
+| Stamina | `dodgeRegenDelaySeconds` | `0.5` | Stamina regen delay after a dodge starts. |
+| Stamina | `exhaustionRecoveryDelaySeconds` | `1.0` | Stamina regen delay after exhaustion. |
+| Stamina | `bowDrawDrainPerSecond` | `5.0` | Stamina drained per second while a bow is drawn; `0` disables it. |
 | Stamina | `attackCommitTimeoutMs` | `1000` | Maximum time between admission and commitment. |
 | PerfectBlock | `enabled` / `npcEnabled` | `true` | Perfect-block rewards for the player / NPCs. |
 | PerfectBlock | `windowMs` | `150` | Timing window opened by a fresh block action. |

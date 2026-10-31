@@ -31,7 +31,10 @@ const Settings& CombatRules::settings() const noexcept { return settings_; }
 void CombatRules::validate(const Settings& settings)
 {
     if (!validCost(settings.lightOneHandedCost) || !validCost(settings.lightTwoHandedCost) ||
-        !validCost(settings.unarmedCost) || !validCost(settings.perfectBlockRestore) ||
+        !validCost(settings.unarmedCost) || !validCost(settings.daggerCost) ||
+        !validCost(settings.axeCost) || !validCost(settings.maceCost) ||
+        !std::isfinite(settings.dualWieldMultiplier) || settings.dualWieldMultiplier < 1.0F ||
+        !validCost(settings.perfectBlockRestore) ||
         settings.attackCommitTimeoutMs <= 0 || settings.perfectBlockWindowMs <= 0 ||
         settings.parryRearmDelayMs < 0 ||
         (settings.affordability != Affordability::PositiveStamina &&
@@ -80,7 +83,8 @@ RejectReason CombatRules::affordabilityFailure(float stamina, float cost) const 
 }
 
 AttackResult CombatRules::beginAttack(ActorId actor, EventToken stage, AttackKind kind,
-                                      float stamina, TimeMs now, float vanillaPowerCost)
+                                      float stamina, TimeMs now, float vanillaPowerCost,
+                                      float customCost)
 {
     AttackResult result;
     if (actor == 0 || stage == 0 || !std::isfinite(stamina)) {
@@ -92,6 +96,16 @@ AttackResult CombatRules::beginAttack(ActorId actor, EventToken stage, AttackKin
     case AttackKind::LightOneHanded: cost = settings_.lightOneHandedCost; break;
     case AttackKind::LightTwoHanded: cost = settings_.lightTwoHandedCost; break;
     case AttackKind::Unarmed: cost = settings_.unarmedCost; break;
+    case AttackKind::Dagger: cost = settings_.daggerCost; break;
+    case AttackKind::OneHandedAxe: cost = settings_.axeCost; break;
+    case AttackKind::OneHandedMace: cost = settings_.maceCost; break;
+    case AttackKind::DualWield:
+        if (customCost <= 0.0F || !std::isfinite(customCost)) {
+            result.reason = RejectReason::InvalidInput;
+            return result;
+        }
+        cost = customCost;
+        break;
     case AttackKind::Power:
         if (!validCost(vanillaPowerCost)) {
             result.reason = RejectReason::InvalidInput;

@@ -18,6 +18,9 @@ struct Configuration {
     bool npcPerfectBlock{true};
     float blockAngleDegrees{120.0F};
     float regenDelaySeconds{0.5F};
+    float dodgeRegenDelaySeconds{0.5F};
+    float exhaustionRecoveryDelaySeconds{1.0F};
+    float bowDrawDrainPerSecond{5.0F};
     bool trace{false};
     bool patchAttackIdles{true};
 };

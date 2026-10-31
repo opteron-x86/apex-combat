@@ -249,6 +249,46 @@ void clockRegressionAndReset()
     check(!rules.successfulBlock(1, 1, 0, 100, std::numeric_limits<TimeMs>::max()).perfect);
 }
 
+void perWeaponCostsAndDualWield()
+{
+    CombatRules rules;
+    auto dagger = rules.beginAttack(1, 1, AttackKind::Dagger, 100, 0);
+    check(dagger.accepted);
+    near(dagger.nominalCost, 10);
+    near(rules.commitAttack(1, 1, 100, 1).staminaDebit, 10);
+    auto axe = rules.beginAttack(1, 2, AttackKind::OneHandedAxe, 90, 2);
+    near(axe.nominalCost, 25);
+    auto mace = rules.beginAttack(1, 3, AttackKind::OneHandedMace, 90, 3);
+    near(mace.nominalCost, 25);
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    // Dual-wield costs arrive from the runtime as an averaged per-hand estimate.
+    auto dual = rules.beginAttack(1, 4, AttackKind::DualWield, 90, 4, 0.0F, 32.5F);
+    check(dual.accepted);
+    near(dual.nominalCost, 32.5F);
+    near(rules.commitAttack(1, 4, 90, 5).staminaDebit, 32.5F);
+    check(rules.beginAttack(1, 5, AttackKind::DualWield, 60, 6, 0.0F, 0).reason == RejectReason::InvalidInput);
+    check(rules.beginAttack(1, 5, AttackKind::DualWield, 60, 6, 0.0F, nan).reason == RejectReason::InvalidInput);
+    check(rules.beginAttack(1, 5, AttackKind::DualWield, 60, 6, 0.0F, inf).reason == RejectReason::InvalidInput);
+    check(rules.beginAttack(1, 5, AttackKind::DualWield, 60, 6, 0.0F, -5).reason == RejectReason::InvalidInput);
+    check(rules.actorCount() == 1);
+
+    Settings lowMultiplier;
+    lowMultiplier.dualWieldMultiplier = 0.5F;
+    bool rejected = false;
+    try { CombatRules invalid(lowMultiplier); } catch (const std::invalid_argument&) { rejected = true; }
+    check(rejected);
+    Settings settings;
+    settings.dualWieldMultiplier = 2.0F;
+    settings.daggerCost = 15;
+    settings.axeCost = 30;
+    settings.maceCost = 45;
+    CombatRules tuned(settings);
+    near(tuned.beginAttack(2, 1, AttackKind::Dagger, 100, 0).nominalCost, 15);
+    near(tuned.beginAttack(2, 2, AttackKind::OneHandedAxe, 100, 1).nominalCost, 30);
+    near(tuned.beginAttack(2, 3, AttackKind::OneHandedMace, 100, 2).nominalCost, 45);
+}
+
 void invalidInputsCannotSpendOrRecover()
 {
     CombatRules rules;
@@ -291,6 +331,7 @@ int main()
     blockSpamAndRelease();
     restorationBoundsAndActorIsolation();
     clockRegressionAndReset();
+    perWeaponCostsAndDualWield();
     invalidInputsCannotSpendOrRecover();
     std::cout << "Combat rules: " << checks << " checks passed\n";
 }
