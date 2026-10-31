@@ -5,7 +5,7 @@ Update it at the end of every session: mark completed work, record new
 decisions with their evidence, and rewrite "Next steps" so a fresh session
 can resume without re-deriving context.
 
-Last updated: 2026-10-31 (session: bow pullback drain fix shipped)
+Last updated: 2026-10-31 (session: poise core shipped, opt-in and unvalidated in game)
 
 ## Project
 
@@ -16,7 +16,7 @@ stamina features from in-game testing, leading toward milestone 0.2
 (issue #6: poise + For Honor counterattacks).
 
 - Repo: `https://github.com/opteron-x86/apex-combat`
-- Branch: `feat/stamina-parry-foundation` @ `f0ab372` (pushed, tree clean
+- Branch: `feat/stamina-parry-foundation` @ `d3ebd99` (pushed, tree clean
   at time of last session end)
 - Base: `b11dc99`
 - Do NOT commit unless explicitly asked; the user has authorized commits
@@ -235,20 +235,82 @@ diagnostic behavior are already generic.
   - Validation: `tools/build.sh native-tests` all green; `local-cross`
     rebuilt; `tools/audit-dll.py` clean; re-packaged `dist/` (dll sha256
     `849120e7...`, differs from the `29dcb5f` build `6c21e5e7...`).
+- **Poise round (commit `d3ebd99`, pushed 2026-10-31) — milestone 0.2
+  first half (issue #6)**: custom poise replacing the old owner, shipped
+  **off by default** (`[Poise] enabled = false`) per the design doc's
+  staged migration rule (old owner stays enabled until this is validated).
+  - Core: `src/core/PoiseRules.h/.cpp` — per-actor pool, `PoiseKind`
+    {Dagger, Sword, Axe, Mace, TwoHanded, Unarmed}, `PoiseSource`
+    {Hit, BlockedHit, PerfectParry}, defaults (maxPoise 100, per-class
+    light damage 20/25/30/35/40/15, power 1.5x, blocked 0.5x, flat 50
+    parry damage ignoring kind, regen 20/s after 3000 ms delay, 1500 ms
+    break recovery). Break staggers and ignores further poise damage
+    inside the window (Chocolate Poise StaggerMode=1 analog); poise
+    refills to max lazily when the window expires. `validate()` throws
+    on non-finite/negative settings. `poise()` never inserts map entries.
+  - Configuration: `[Poise]` section, 12 keys registered in
+    `knownKey()`/`apply()` (maxPoise 1..100000, damages 0..10000,
+    power 0..100, blocked 0..10, parry 0..10000, delay/recovery seconds
+    0..60 converted to ms, regen 0..100000); `knownSection` gained
+    "poise"; `Configuration` gained `poiseSettings` + `poise` fields.
+  - Runtime: `PoiseKindFromWeapon` helper (GetAttackingWeapon →
+    GetWeaponType mapping; null weapon → Unarmed for creatures);
+    `ApplyDefenderPoise` helper (locks `stateMutex` — recursive — itself,
+    traces `poise-damage`/`poise-break` with reason codes). `PreHit`
+    restructured: gate-fail path applies unblocked poise damage
+    (`staggerStart` on break); non-perfect block path chips at the
+    blocked fraction; perfect-parry path deals flat parry damage to the
+    attacker (break → `staggerStart` instead of `recoilStart`); all
+    graph notifications stay after lock release. Wiring: `Prune`,
+    `TESObjectLoadedEvent`, LoadingMenu/MainMenu handlers all reset
+    poise alongside stamina rules; `InitializeRuntime` calls
+    `poiseRules.setSettings` when enabled; capabilities log extended
+    with `poise={}`.
+  - INI: `[Poise]` section (all defaults, enabled=false) with a
+    migration comment ("enable only after the previous poise mod is
+    removed or disabled, or both systems will stagger").
+  - README: poise capability bullet + migration note; config table
+    gained 10 Poise rows; "not yet implemented" now lists For Honor
+    adapters, projectile/spell eligibility, sprint/jump/dodge costs,
+    poise HUD (owner undecided).
+  - Tests: new `tests/PoiseTests.cpp` (5 suites: break/chain-guard,
+    regen/damage-delay, multipliers/parry, validation/resets,
+    replacement settings) registered as CTest `poise_rules`;
+    ConfigurationTests gained a `poiseConfiguration()` block (defaults,
+    full custom, limits, invalid expecting 11 diagnostics) and
+    shipped-INI checks in the `argv[1]` block.
+  - Test-arithmetic fixes made while verifying against the
+    implementation: break at `now=3` sets `staggeredUntil == 1503`
+    (not 1500); regen expectation 85 moved to `now=13000` (13500
+    would be 95, capped 100); invalid poise diagnostics count is 11.
+  - Validation: `tools/build.sh native-tests` 4/4 CTest suites +
+    7 tools tests all green; `local-cross` rebuilt
+    (`build/windows-local/ApexCombat.dll`); `tools/audit-dll.py`
+    clean (exit 0); re-packaged `dist/` (dll inside zip sha256
+    `3a3b7ea2...`, differs from the `f0ab372` build `849120e7...`).
 
 ## Next steps (execute in order)
 
 1. Wait for user in-game validation of the bow pullback drain (commit
-   `f0ab372` build) and the remaining stamina behaviors.
+   `f0ab372` build), the remaining stamina behaviors, and — only after
+   they retire their current poise mod — the poise build (`d3ebd99`),
+   then have them flip `[Poise] enabled` in the deployed INI.
 2. Deploy the fresh build to MO2 when the user decides (deploy plan
-   and rollback are documented above; preview only so far).
-3. Milestone 0.2 (issue #6): poise + For Honor counterattacks.
+   and rollback are documented above; preview only so far). They deploy
+   themselves.
+3. Milestone 0.2 second half (issue #6): For Honor counterattack effect
+   adapters (trace the actual plugin records — FormKeys 0x5F5/0x89F/
+   0x8BD via Variable01/Variable03 per the audit doc) and decide the
+   poise HUD owner (TrueHUD API headers not vendored locally yet).
 
 ## Open items / parked
 
 - MO2 deployment apply is pending a user decision (preview-only so far).
-- Milestone 0.2 (issue #6): poise + For Honor counterattacks — next
-  after this stamina round.
+- Poise (milestone 0.2 first half) is code-complete but needs in-game
+  validation; `enabled=false` until the user retires their current poise
+  mod and opts in. Remaining milestone 0.2 work: For Honor counterattack
+  effect adapters and the poise HUD owner decision (TrueHUD API headers
+  not vendored locally; owner undecided by design).
 - Player-only vs NPC scope for bow drain: default drains both player
   and NPCs; if user wants player-only, gate with `IsPlayerRef()`.
 - Separate pullback-vs-full-draw bow drain rates: current build uses
