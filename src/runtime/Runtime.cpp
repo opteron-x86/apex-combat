@@ -6,6 +6,7 @@
 #include "core/CombatRules.h"
 #include "core/Configuration.h"
 #include "core/ParryContacts.h"
+#include "core/PoiseRules.h"
 #include "precision/PrecisionAPI.h"
 
 #include <algorithm>
@@ -24,6 +25,7 @@ using Core::EventToken;
 using Core::TimeMs;
 Configuration config;
 Core::CombatRules rules;
+Core::PoiseRules poiseRules;
 std::recursive_mutex stateMutex;
 std::atomic_bool active{false};
 bool initialized{false};
@@ -88,6 +90,7 @@ void Prune(TimeMs now) {
     for (auto it = actors.begin(); it != actors.end();) {
         if (now - it->second.lastSeen > 120000) {
             rules.resetActor(it->first);
+            poiseRules.resetActor(static_cast<Core::ActorId>(it->first));
             it = actors.erase(it);
         } else ++it;
     }
@@ -358,6 +361,34 @@ bool Unblockable(RE::Actor* attacker) {
     return false;
 }
 
+Core::PoiseKind PoiseKindFromWeapon(RE::Actor* attacker) {
+    auto* entry = attacker->GetAttackingWeapon();
+    auto* weapon = entry && entry->object ? entry->object->As<RE::TESObjectWEAP>() : nullptr;
+    if (!weapon) return Core::PoiseKind::Unarmed;  // Creature and hand-to-hand contacts.
+    switch (weapon->GetWeaponType()) {
+    case RE::WEAPON_TYPE::kOneHandDagger: return Core::PoiseKind::Dagger;
+    case RE::WEAPON_TYPE::kOneHandAxe: return Core::PoiseKind::Axe;
+    case RE::WEAPON_TYPE::kOneHandMace: return Core::PoiseKind::Mace;
+    case RE::WEAPON_TYPE::kTwoHandSword:
+    case RE::WEAPON_TYPE::kTwoHandAxe: return Core::PoiseKind::TwoHanded;
+    case RE::WEAPON_TYPE::kHandToHandMelee: return Core::PoiseKind::Unarmed;
+    default: return Core::PoiseKind::Sword;
+    }
+}
+
+// Locks stateMutex itself (recursive). Returns true when this contact broke
+// the defender's poise; the stagger notification must be sent after lock release.
+bool ApplyDefenderPoise(RE::Actor* attacker, RE::Actor* defender, bool blocked, TimeMs now) {
+    if (!config.poise) return false;
+    std::scoped_lock lock(stateMutex);
+    const auto result = poiseRules.applyDamage(defender->GetFormID(), PoiseKindFromWeapon(attacker),
+        attacker->IsPowerAttacking(), blocked ? Core::PoiseSource::BlockedHit : Core::PoiseSource::Hit,
+        now);
+    Trace(defender, result.broke ? "poise-break" : "poise-damage", 0, result.poiseAfter,
+        static_cast<int>(result.reason));
+    return result.broke;
+}
+
 PRECISION_API::PreHitCallbackReturn PreHit(const PRECISION_API::PrecisionHitData& hit) {
     PRECISION_API::PreHitCallbackReturn output;
     if (!StableGameplay()) return output;
@@ -381,7 +412,14 @@ PRECISION_API::PreHitCallbackReturn PreHit(const PRECISION_API::PrecisionHitData
     }
     if (!config.perfectBlock || (!defender->IsPlayerRef() && !config.npcPerfectBlock) ||
         !defender->IsBlocking() || defender->IsStaggered() || Unblockable(attacker) ||
-        !WithinBlockCone(defender, attacker)) return output;
+        !WithinBlockCone(defender, attacker)) {
+        const bool broke = ApplyDefenderPoise(attacker, defender, false, now);
+        if (broke) defender->NotifyAnimationGraph("staggerStart");
+        return output;
+    }
+    bool parried = false;
+    bool attackerBroke = false;
+    bool defenderBroke = false;
     {
         std::scoped_lock lock(stateMutex);
         auto& attackerState = State(attacker, now);
@@ -396,21 +434,33 @@ PRECISION_API::PreHitCallbackReturn PreHit(const PRECISION_API::PrecisionHitData
         auto result = rules.successfulBlock(defender->GetFormID(), ++defenderState.hit,
             Stamina(defender), MaximumStamina(defender), now);
         ObserveExhaustion(defender, result.exhausted, now);
-        if (!result.perfect) return output;
-        if (strike && !attackerState.contacts.remember(strike, defender->GetFormID())) {
+        if (!result.perfect) {
+            // An ordinary block still chips poise at the blocked fraction.
+            defenderBroke = ApplyDefenderPoise(attacker, defender, true, now);
+        } else if (strike && !attackerState.contacts.remember(strike, defender->GetFormID())) {
             // A duplicate contact for the same strike/defender cannot refund twice.
             output.bIgnoreHit = true;
             Trace(attacker, "duplicate-parry-contact", strike, 0);
             return output;
+        } else {
+            output.bIgnoreHit = true;
+            parried = true;
+            if (result.staminaRestore > 0) defender->AsActorValueOwner()->RestoreActorValue(
+                RE::ActorValue::kStamina, result.staminaRestore);
+            Trace(defender, "perfect-parry", defenderState.hit, result.staminaRestore);
+            if (config.poise) {
+                const auto poise = poiseRules.applyDamage(attacker->GetFormID(), PoiseKindFromWeapon(attacker),
+                    attacker->IsPowerAttacking(), Core::PoiseSource::PerfectParry, now);
+                Trace(attacker, poise.broke ? "poise-break" : "poise-parry", defenderState.hit,
+                    poise.poiseAfter, static_cast<int>(poise.reason));
+                attackerBroke = poise.broke;
+            }
         }
-        output.bIgnoreHit = true;
-        if (result.staminaRestore > 0) defender->AsActorValueOwner()->RestoreActorValue(
-            RE::ActorValue::kStamina, result.staminaRestore);
-        Trace(defender, "perfect-parry", defenderState.hit, result.staminaRestore);
     }
     // Feedback is sent after releasing the rules lock: graph callbacks can re-enter.
     defender->NotifyAnimationGraph("Apex_PerfectParry");
-    attacker->NotifyAnimationGraph("recoilStart");
+    attacker->NotifyAnimationGraph(attackerBroke ? "staggerStart" : "recoilStart");
+    if (defenderBroke) defender->NotifyAnimationGraph("staggerStart");
     return output;
 }
 
@@ -449,6 +499,7 @@ class LifecycleEvents final : public RE::BSTEventSink<RE::TESObjectLoadedEvent>,
         if (event && !event->loaded) {
             std::scoped_lock lock(stateMutex);
             rules.resetActor(event->formID);
+            poiseRules.resetActor(static_cast<Core::ActorId>(event->formID));
             actors.erase(event->formID);
         }
         return RE::BSEventNotifyControl::kContinue;
@@ -459,6 +510,7 @@ class LifecycleEvents final : public RE::BSTEventSink<RE::TESObjectLoadedEvent>,
             else if (event->menuName == RE::LoadingMenu::MENU_NAME) {
                 std::scoped_lock lock(stateMutex);
                 rules.resetSession();
+                poiseRules.resetSession();
                 actors.clear();
             }
             else {
@@ -478,6 +530,7 @@ bool InitializeRuntime() {
     config = settings.config;
     for (const auto& diagnostic : settings.diagnostics) SKSE::log::warn("{}", diagnostic);
     rules.setSettings(config.rules);
+    if (config.poise) poiseRules.setSettings(config.poiseSettings);
     if (!config.enabled) { SKSE::log::info("Disabled in configuration."); return true; }
     GraphHooks<false>::Install();
     GraphHooks<true>::Install();
@@ -489,8 +542,9 @@ bool InitializeRuntime() {
     auto* api = static_cast<PRECISION_API::IVPrecision1*>(PRECISION_API::RequestPluginAPI(PRECISION_API::InterfaceVersion::V1));
     if (api) precisionReady = api->AddPreHitCallback(SKSE::GetPluginHandle(), PreHit) == PRECISION_API::APIResult::OK;
     SKSE::log::info("Capabilities: graph stamina=true; attack IDLE gates={}; Precision melee parry={}; "
-        "bow draw drain={}; VR={}",
-        config.patchAttackIdles, precisionReady, config.bowDrawDrainPerSecond, REL::Module::IsVR());
+        "bow draw drain={}; poise={}; VR={}",
+        config.patchAttackIdles, precisionReady, config.bowDrawDrainPerSecond, config.poise,
+        REL::Module::IsVR());
     if (!precisionReady) SKSE::log::warn("Perfect blocking requires a compatible Precision API. Stamina features remain available.");
     initialized = true;
     return true;
@@ -500,6 +554,7 @@ void ResetSession() {
     active = false;
     std::scoped_lock lock(stateMutex);
     rules.resetSession();
+    poiseRules.resetSession();
     actors.clear();
 }
 

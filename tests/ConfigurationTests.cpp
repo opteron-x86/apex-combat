@@ -126,6 +126,102 @@ trace=true
     check(validated.settings().perfectBlockWindowMs == 125);
 }
 
+void poiseConfiguration()
+{
+    const auto defaults = parseConfiguration("");
+    check(!defaults.config.poise);
+    near(defaults.config.poiseSettings.maxPoise, 100);
+    near(defaults.config.poiseSettings.swordDamage, 25);
+    near(defaults.config.poiseSettings.perfectParryDamage, 50);
+    check(defaults.config.poiseSettings.recoveryDelayMs == 3000);
+    check(defaults.config.poiseSettings.breakRecoveryMs == 1500);
+
+    const auto full = parseConfiguration(R"ini(
+[Poise]
+enabled=1
+maxPoise=40
+daggerDamage=5
+swordDamage=30
+axeDamage=45
+maceDamage=35
+twoHandedDamage=60
+unarmedDamage=10
+powerMultiplier=2.5
+blockedMultiplier=0.25
+perfectParryDamage=80
+recoveryDelaySeconds=5
+recoveryPerSecond=50
+breakRecoverySeconds=2
+)ini");
+    check(full.diagnostics.empty());
+    check(full.config.poise);
+    near(full.config.poiseSettings.maxPoise, 40);
+    near(full.config.poiseSettings.daggerDamage, 5);
+    near(full.config.poiseSettings.swordDamage, 30);
+    near(full.config.poiseSettings.axeDamage, 45);
+    near(full.config.poiseSettings.maceDamage, 35);
+    near(full.config.poiseSettings.twoHandedDamage, 60);
+    near(full.config.poiseSettings.unarmedDamage, 10);
+    near(full.config.poiseSettings.powerMultiplier, 2.5F);
+    near(full.config.poiseSettings.blockedMultiplier, 0.25F);
+    near(full.config.poiseSettings.perfectParryDamage, 80);
+    check(full.config.poiseSettings.recoveryDelayMs == 5000);
+    check(full.config.poiseSettings.breakRecoveryMs == 2000);
+    near(full.config.poiseSettings.recoveryPerSecond, 50);
+    Core::PoiseRules validated(full.config.poiseSettings);
+    check(validated.settings().maxPoise == 40);
+
+    auto limits = parseConfiguration(R"ini(
+[Poise]
+maxPoise=100000
+daggerDamage=10000
+swordDamage=0
+axeDamage=10000
+maceDamage=10000
+twoHandedDamage=10000
+unarmedDamage=10000
+powerMultiplier=100
+blockedMultiplier=10
+perfectParryDamage=10000
+recoveryDelaySeconds=60
+recoveryPerSecond=100000
+breakRecoverySeconds=60
+)ini");
+    check(limits.diagnostics.empty());
+    near(limits.config.poiseSettings.maxPoise, 100000);
+    check(limits.config.poiseSettings.recoveryDelayMs == 60000);
+    check(limits.config.poiseSettings.breakRecoveryMs == 60000);
+    Core::PoiseRules validatedLimits(limits.config.poiseSettings);
+    check(validatedLimits.settings().blockedMultiplier == 10);
+
+    const auto invalid = parseConfiguration(R"ini(
+[Poise]
+maxPoise=0
+daggerDamage=-1
+swordDamage=nan
+axeDamage=10001
+maceDamage=inf
+powerMultiplier=100.5
+blockedMultiplier=-0.5
+perfectParryDamage=10001
+recoveryDelaySeconds=61
+recoveryPerSecond=100001
+breakRecoverySeconds=60.5
+)ini");
+    check(invalid.diagnostics.size() == 11);
+    near(invalid.config.poiseSettings.maxPoise, 100);
+    near(invalid.config.poiseSettings.daggerDamage, 20);
+    near(invalid.config.poiseSettings.swordDamage, 25);
+    near(invalid.config.poiseSettings.axeDamage, 30);
+    near(invalid.config.poiseSettings.maceDamage, 35);
+    near(invalid.config.poiseSettings.powerMultiplier, 1.5F);
+    near(invalid.config.poiseSettings.blockedMultiplier, 0.5F);
+    near(invalid.config.poiseSettings.perfectParryDamage, 50);
+    check(invalid.config.poiseSettings.recoveryDelayMs == 3000);
+    check(invalid.config.poiseSettings.recoveryPerSecond == 20);
+    check(invalid.config.poiseSettings.breakRecoveryMs == 1500);
+}
+
 void whitespaceCommentsAndCase()
 {
     const auto result = parseConfiguration(
@@ -311,6 +407,7 @@ void invalidFilesAndSizeLimits()
 int main(int argc, char** argv)
 {
     defaultsAndCompleteConfiguration();
+    poiseConfiguration();
     whitespaceCommentsAndCase();
     strictNumbersAndFiniteBounds();
     invalidBooleansDoNotEnableFeatures();
@@ -326,6 +423,15 @@ int main(int argc, char** argv)
         near(shipped.config.rules.dualWieldMultiplier, 1.6F);
         near(shipped.config.dodgeRegenDelaySeconds, 0.5F);
         near(shipped.config.bowDrawDrainPerSecond, 5.0F);
+        check(!shipped.config.poise);
+        near(shipped.config.poiseSettings.maxPoise, 100);
+        near(shipped.config.poiseSettings.swordDamage, 25);
+        near(shipped.config.poiseSettings.perfectParryDamage, 50);
+        check(shipped.config.poiseSettings.recoveryDelayMs == 3000);
+        check(shipped.config.poiseSettings.breakRecoveryMs == 1500);
+        near(shipped.config.poiseSettings.recoveryPerSecond, 20);
+        Core::PoiseRules validatedPoise(shipped.config.poiseSettings);
+        check(validatedPoise.settings().maxPoise == 100);
     }
     std::cout << "Configuration: " << checks << " checks passed\n";
 }

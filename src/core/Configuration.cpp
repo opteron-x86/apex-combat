@@ -70,7 +70,7 @@ bool boolean(std::string_view text, bool& target)
 bool knownSection(std::string_view section)
 {
     return section == "general" || section == "stamina" || section == "perfectblock" ||
-           section == "debug";
+           section == "poise" || section == "debug";
 }
 
 bool knownKey(std::string_view key)
@@ -87,6 +87,13 @@ bool knownKey(std::string_view key)
            key == "perfectblock.enabled" || key == "perfectblock.npcenabled" ||
            key == "perfectblock.windowms" || key == "perfectblock.restore" ||
            key == "perfectblock.rearmdelayms" || key == "perfectblock.blockangledegrees" ||
+           key == "poise.enabled" || key == "poise.maxpoise" ||
+           key == "poise.daggerdamage" || key == "poise.sworddamage" ||
+           key == "poise.axedamage" || key == "poise.macedamage" ||
+           key == "poise.twohandeddamage" || key == "poise.unarmeddamage" ||
+           key == "poise.powermultiplier" || key == "poise.blockedmultiplier" ||
+           key == "poise.perfectparrydamage" || key == "poise.recoverydelayseconds" ||
+           key == "poise.recoverypersecond" || key == "poise.breakrecoveryseconds" ||
            key == "debug.trace";
 }
 
@@ -123,6 +130,28 @@ bool apply(Configuration& config, const std::string& key, std::string_view value
     if (key == "perfectblock.rearmdelayms")
         return number(value, Core::TimeMs{0}, Core::TimeMs{10000}, rules.parryRearmDelayMs);
     if (key == "perfectblock.blockangledegrees") return number(value, 1.0F, 360.0F, config.blockAngleDegrees);
+    if (key == "poise.enabled") return boolean(value, config.poise);
+    if (key == "poise.maxpoise") return number(value, 1.0F, 100000.0F, config.poiseSettings.maxPoise);
+    if (key == "poise.daggerdamage") return number(value, 0.0F, 10000.0F, config.poiseSettings.daggerDamage);
+    if (key == "poise.sworddamage") return number(value, 0.0F, 10000.0F, config.poiseSettings.swordDamage);
+    if (key == "poise.axedamage") return number(value, 0.0F, 10000.0F, config.poiseSettings.axeDamage);
+    if (key == "poise.macedamage") return number(value, 0.0F, 10000.0F, config.poiseSettings.maceDamage);
+    if (key == "poise.twohandeddamage") return number(value, 0.0F, 10000.0F, config.poiseSettings.twoHandedDamage);
+    if (key == "poise.unarmeddamage") return number(value, 0.0F, 10000.0F, config.poiseSettings.unarmedDamage);
+    if (key == "poise.powermultiplier") return number(value, 0.0F, 100.0F, config.poiseSettings.powerMultiplier);
+    if (key == "poise.blockedmultiplier") return number(value, 0.0F, 10.0F, config.poiseSettings.blockedMultiplier);
+    if (key == "poise.perfectparrydamage")
+        return number(value, 0.0F, 10000.0F, config.poiseSettings.perfectParryDamage);
+    if (key == "poise.recoverypersecond")
+        return number(value, 0.0F, 100000.0F, config.poiseSettings.recoveryPerSecond);
+    if (key == "poise.recoverydelayseconds" || key == "poise.breakrecoveryseconds") {
+        float seconds = 0.0F;
+        if (!number(value, 0.0F, 60.0F, seconds)) return false;
+        const auto ms = static_cast<Core::TimeMs>(seconds * 1000.0F);
+        if (key == "poise.recoverydelayseconds") config.poiseSettings.recoveryDelayMs = ms;
+        else config.poiseSettings.breakRecoveryMs = ms;
+        return true;
+    }
     if (key == "stamina.affordability") {
         const auto mode = lower(value);
         if (mode == "positive") {

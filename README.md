@@ -9,10 +9,11 @@ A CommonLibSSE-NG native plugin for Skyrim Special Edition / Anniversary Edition
 - **Power attacks.** Admission requires positive stamina, but the engine keeps ownership of the power-attack debit; Apex Combat never charges a second power cost.
 - **Perfect-block stamina recovery.** A fresh block action opens a bounded window (default 150 ms). A confirmed eligible melee hit inside the window is rejected, grants one configurable stamina reward (default 25), and consumes the window. Holding block never renews it; ordinary or mistimed blocks grant nothing. Duplicate contacts of the same strike and defender are recognized and cannot refund twice.
 - **IDLE gates.** Adds a stamina condition to vanilla and custom attack IDLE roots so directly dispatched attacks cannot bypass admission.
+- **Poise.** Each actor carries a per-class poise pool: light hits subtract class-damage, power attacks scale it, ordinary blocks pass only the blocked fraction, and a perfect parry deals flat damage to the attacker. A break staggers the actor and ignores further poise damage until the break recovery elapses; poise then refills and regenerates after the configured delay.
 
-Perfect blocking requires the [Precision](https://www.nexusmods.com/skyrimspecialedition/mods/72305) collision framework. Without it, stamina features remain available and perfect blocking stays off.
+Poise is **off by default** while it is validated. Enable it only after removing or disabling your previous poise mod (for example Chocolate Poise) — running both at once double-staggers. Perfect blocking and poise both require the [Precision](https://www.nexusmods.com/skyrimspecialedition/mods/72305) collision framework. Without it, stamina features remain available and perfect blocking stays off.
 
-Not yet implemented: poise (milestone 0.2), projectile/spell eligibility, sprint/jump/dodge attack costs, and For Honor effect adapters.
+Not yet implemented: For Honor effect adapters, projectile/spell eligibility, sprint/jump/dodge attack costs, and a poise HUD (one bar owner is still undecided).
 
 ## Installation
 
@@ -50,6 +51,15 @@ All options live in `<game>/Data/SKSE/Plugins/ApexCombat.ini`. Restart the game 
 | PerfectBlock | `restore` | `25` | Stamina restored by one perfect block, capped by the missing amount. |
 | PerfectBlock | `rearmDelayMs` | `200` | Minimum interval between fresh block starts; `0` disables it. |
 | PerfectBlock | `blockAngleDegrees` | `120` | Total frontal blocking cone. |
+| Poise | `enabled` | `false` | Master switch; enable only after retiring the previous poise mod. |
+| Poise | `maxPoise` | `100` | Poise pool size per actor. |
+| Poise | `daggerDamage` / `swordDamage` / `axeDamage` / `maceDamage` / `twoHandedDamage` / `unarmedDamage` | `20/25/30/35/40/15` | Poise damage per light hit by weapon class. |
+| Poise | `powerMultiplier` | `1.5` | Scales poise damage of power attacks. |
+| Poise | `blockedMultiplier` | `0.5` | Fraction of poise damage that passes an ordinary held block. |
+| Poise | `perfectParryDamage` | `50` | Flat poise damage dealt to an attacker whose strike is perfect-parried. |
+| Poise | `recoveryDelaySeconds` | `3.0` | Delay before poise regen after a hit. |
+| Poise | `recoveryPerSecond` | `20.0` | Poise regenerated per second after the delay. |
+| Poise | `breakRecoverySeconds` | `1.5` | Stagger length after a break; no further poise damage inside the window. |
 | Debug | `trace` | `false` | Log every admission, commit, and parry decision. |
 
 ## Building

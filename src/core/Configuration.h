@@ -1,6 +1,7 @@
 #pragma once
 
 #include "CombatRules.h"
+#include "PoiseRules.h"
 
 #include <filesystem>
 #include <string>
@@ -11,9 +12,13 @@ namespace Apex {
 
 struct Configuration {
     Core::Settings rules;
+    Core::PoiseSettings poiseSettings;
     bool enabled{true};
     bool playerAttacks{true};
     bool npcAttacks{true};
+    // Custom poise is opt-in: Chocolate Poise stays the owner until this is
+    // enabled and that mod is retired (migration rule from the design doc).
+    bool poise{false};
     bool perfectBlock{true};
     bool npcPerfectBlock{true};
     float blockAngleDegrees{120.0F};
