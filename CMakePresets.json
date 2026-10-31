@@ -1,0 +1,23 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "native-tests", "generator": "Ninja", "binaryDir": "${sourceDir}/build/native-tests",
+      "cacheVariables": {"CMAKE_BUILD_TYPE": "Debug", "APEX_BUILD_PLUGIN": "OFF", "APEX_BUILD_TESTS": "ON", "APEX_SANITIZERS": "ON"}
+    },
+    {
+      "name": "windows-release", "generator": "Ninja", "binaryDir": "${sourceDir}/build/windows-release",
+      "cacheVariables": {"CMAKE_BUILD_TYPE": "Release", "CMAKE_C_COMPILER": "clang-cl", "CMAKE_CXX_COMPILER": "clang-cl", "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake", "VCPKG_TARGET_TRIPLET": "x64-windows-static-md", "APEX_BUILD_PLUGIN": "ON", "APEX_BUILD_TESTS": "ON"}
+    },
+    {
+      "name": "linux-cross", "generator": "Ninja", "binaryDir": "${sourceDir}/build/linux-cross",
+      "cacheVariables": {"CMAKE_BUILD_TYPE": "Release", "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/tools/cmake/linux-clangcl.cmake", "CMAKE_PREFIX_PATH": "$env{APEX_WINDOWS_PREFIX}", "APEX_BUILD_PLUGIN": "ON", "APEX_BUILD_TESTS": "OFF"}
+    }
+  ],
+  "buildPresets": [
+    {"name": "native-tests", "configurePreset": "native-tests"},
+    {"name": "windows-release", "configurePreset": "windows-release"},
+    {"name": "linux-cross", "configurePreset": "linux-cross"}
+  ],
+  "testPresets": [{"name": "native-tests", "configurePreset": "native-tests", "output": {"outputOnFailure": true}}]
+}

@@ -1,0 +1,31 @@
+name: Build
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  portable-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: tools/build.sh native-tests
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+      - name: Configure
+        shell: pwsh
+        run: |
+          $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
+          cmake --preset windows-release
+      - run: cmake --build --preset windows-release --parallel 4
+      - run: ctest --test-dir build/windows-release --output-on-failure
+      - run: python -m unittest discover -s tools -p "test_*.py"
+      - run: python tools/package.py --build build/windows-release --output dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ApexCombat
+          path: dist/*
+          if-no-files-found: error
