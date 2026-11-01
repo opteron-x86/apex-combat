@@ -627,7 +627,12 @@ bool TurtleTick(RE::Actor* actor, RE::Actor* target, ActorState& state, TimeMs n
     actor->SetGraphVariableFloat("movementSpeed", 0.5F);
     actor->SetGraphVariableFloat("InputDirection", direction);
     actor->SetGraphVariableFloat("InputMagnitude", 0.5F);
-    if (!actor->IsBlocking()) actor->NotifyAnimationGraph("blockStart");
+    // Shield bearers circle behind a raised shield; re-assert block when it
+    // drops. Shieldless circlers stay ready instead of tapping block.
+    const auto* left = actor->GetEquippedObject(true);
+    if (left && left->IsArmor() && !actor->IsBlocking()) {
+        actor->NotifyAnimationGraph("blockStart");
+    }
     return true;
 }
 
@@ -677,10 +682,10 @@ void DirectorTick(RE::Actor* actor, TimeMs now) {
         return;
     }
     if (!state.turtleCircling) {
-        // Enter circling: shield up (left-hand armor), in range, no slot
-        // held. NPCs without a shield keep the vanilla pressure game.
-        const auto* left = actor->GetEquippedObject(true);
-        if (!actor->IsBlocking() || !left || !left->IsArmor()) return;
+        // Enter circling: melee loadout, in range, no slot held. Ranged
+        // actors keep their kiting AI. Shield bearers raise block in the
+        // tick; everyone else orbits ready.
+        if (Ranged(actor)) return;
         if (aiRules.holdsSlot(target->GetFormID(), actor->GetFormID(), now)) return;
         const float dist = actor->GetPosition().GetDistance(target->GetPosition());
         if (dist > config.circleRadiusMax * 1.5F) return;

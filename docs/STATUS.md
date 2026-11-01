@@ -566,7 +566,19 @@ diagnostic behavior are already generic.
     future "encourage block" step if turtles should circle more.
   - Build: native tests green, local-cross linked clean, audit-dll
     clean, re-packaged, DLL synced to the MO2 mod dir (sha256 verified).
-
+- **Milestone 0.3 round 5 (uncommitted)** — circling extended to all
+  melee non-holders:
+  - `DirectorTick` entry no longer requires a raised shield: any melee
+    NPC without a slot within the circle band circles its target
+    (ranged actors still keep their kiting AI). Shield bearers still
+    raise and re-assert block in `TurtleTick`; shieldless circlers
+    orbit ready without tapping block.
+  - This completes design goal 2 ("slot holders attack; everyone else
+    circles"). Openings, retaliation, and max-circle commit are
+    unchanged and apply to all circlers.
+  - INI/README wording updated (`maxCircleSeconds` is no longer
+    shield-specific); live INI synced.
+  - Build: native tests green, local-cross linked clean.
 ## Next steps (execute in order)
 
 1. Milestone 0.3 (design: `docs/MILESTONE-0.3-combat-ai-director.md`):
