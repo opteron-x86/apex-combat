@@ -3,6 +3,7 @@
 #include <REX/W32/KERNEL32.h>
 #include <Windows.h>
 #include "Runtime.h"
+#include "core/AiRules.h"
 #include "core/CombatRules.h"
 #include "core/Configuration.h"
 #include "core/ParryContacts.h"
@@ -15,6 +16,7 @@
 #include <chrono>
 #include <cmath>
 #include <mutex>
+#include <random>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -27,6 +29,7 @@ using Core::TimeMs;
 Configuration config;
 Core::CombatRules rules;
 Core::PoiseRules poiseRules;
+Core::AiRules aiRules;
 std::recursive_mutex stateMutex;
 std::atomic_bool active{false};
 bool initialized{false};
@@ -49,6 +52,10 @@ struct ActorState {
     float freePowerBaseline{0.0F};
     EventToken freePowerStage{0};
     TimeMs lastSeen{0};
+    // Director: a recorded bash whose commit never landed must be cancelled
+    // (rejected/superseded begin), restoring the cooldown.
+    bool bashPending{false};
+    TimeMs bashRecordedAt{0};
     Core::ParryContacts contacts;
 };
 std::unordered_map<RE::FormID, ActorState> actors;
@@ -185,10 +192,44 @@ bool AttackRequest(std::string_view event) {
         event.starts_with("mco_attackstart") || event.starts_with("mco_powerattackstart");
 }
 
+bool BashEvent(std::string_view event) {
+    return event == "bashstart" || event == "bashpowerstart" || event == "mcobashstart" ||
+        event == "bfco_bashstart";
+}
+
+// Uniform sample in [0,1) for director rolls and slot window draws.
+float RandomUnit() {
+    static std::mt19937 rng{std::random_device{}()};
+    return std::generate_canonical<float, 24>(rng);
+}
+
+// The director gates NPC melee against the player; NPC-vs-NPC stays vanilla
+// unless director.playeronly is off. Returns the attack target for `actor`,
+// or nullptr when the director does not manage this attack.
+RE::Actor* DirectorTarget(RE::Actor* actor) {
+    if (!config.director || actor->IsPlayerRef() || !EligibleActor(actor)) return nullptr;
+    auto* controller = actor->GetActorRuntimeData().combatController;
+    auto target = controller ? controller->targetHandle.get() : RE::NiPointer<RE::Actor>{};
+    auto* targetActor = target.get();
+    if (!EligibleActor(targetActor)) return nullptr;
+    if (config.directorPlayerOnly && !targetActor->IsPlayerRef()) return nullptr;
+    return targetActor;
+}
+
+// Cancels a recorded bash whose commit never landed. Caller must hold
+// stateMutex; `state` must belong to `actor`.
+void CancelPendingBash(RE::Actor* actor, ActorState& state) {
+    if (!state.bashPending) return;
+    aiRules.cancelBash(actor->GetFormID(), state.bashRecordedAt);
+    state.bashPending = false;
+    state.bashRecordedAt = 0;
+}
+
 bool Begin(RE::Actor* actor, bool power, TimeMs now) {
     std::scoped_lock lock(stateMutex);
     Prune(now);
     auto& state = State(actor, now);
+    CancelPendingBash(actor, state);
     float customCost = 0.0F;
     const auto kind = Kind(actor, power, customCost);
     const float baseline = Stamina(actor);
@@ -209,6 +250,53 @@ bool Begin(RE::Actor* actor, bool power, TimeMs now) {
     }
     ObserveExhaustion(actor, result.exhausted, now);
     Trace(actor, result.accepted ? "admit" : "reject", state.stage, result.nominalCost, static_cast<int>(result.reason));
+    return result.accepted;
+}
+
+// A bash begin: director cooldown gate first (NPCs), then the bash stamina
+// cost rides the ordinary attack admission/commit path via customCost, so
+// SCAR and the exhaustion gate still see a real debit.
+bool BeginBash(RE::Actor* actor, TimeMs now) {
+    std::scoped_lock lock(stateMutex);
+    Prune(now);
+    auto& state = State(actor, now);
+    CancelPendingBash(actor, state);
+    const auto actorId = actor->GetFormID();
+    const float cost = config.aiSettings.bashStaminaCost;
+    if (config.director && !actor->IsPlayerRef()) {
+        const auto bash = aiRules.admitBash(actorId, now);
+        if (!bash.allowed) {
+            Trace(actor, "bash-denied-cooldown", state.stage,
+                static_cast<float>(aiRules.bashCooldownRemaining(actorId, now)),
+                static_cast<int>(bash.reason));
+            state.denied = true;
+            state.nextStage = true;
+            return false;
+        }
+        if (cost > 0.0F && Stamina(actor) < cost) {
+            aiRules.cancelBash(actorId, now);
+            Trace(actor, "bash-denied-stamina", state.stage, cost);
+            state.denied = true;
+            state.nextStage = true;
+            return false;
+        }
+        state.bashPending = true;
+        state.bashRecordedAt = now;
+    }
+    if (cost <= 0.0F) {
+        Trace(actor, "bash-admit", state.stage, 0.0F);
+        return true;
+    }
+    const float baseline = Stamina(actor);
+    // DualWield is the custom-cost kind; the nominal cost is the bash's.
+    auto result = rules.beginAttack(actorId, ++state.stage, AttackKind::DualWield, baseline, now, 0.0F, cost);
+    state.committed = false;
+    state.denied = !result.accepted;
+    state.nextStage = false;
+    if (!result.accepted) CancelPendingBash(actor, state);
+    ObserveExhaustion(actor, result.exhausted, now);
+    Trace(actor, result.accepted ? "bash-admit" : "bash-reject", state.stage, result.nominalCost,
+        static_cast<int>(result.reason));
     return result.accepted;
 }
 
@@ -243,6 +331,9 @@ bool Commit(RE::Actor* actor, TimeMs now) {
     }
     state.committed = true;
     state.nextStage = false;
+    // The bash debit landed; the cooldown record now stands on its own.
+    state.bashPending = false;
+    state.bashRecordedAt = 0;
     if (result.staminaDebit > 0) {
         actor->AsActorValueOwner()->DamageActorValue(RE::ActorValue::kStamina, result.staminaDebit);
         auto* process = actor->GetActorRuntimeData().currentProcess;
@@ -300,6 +391,7 @@ bool IncomingEvent(RE::Actor* actor, std::string_view event) {
     } else if (event == "attackstop" || event == "staggerstart" || event == "recoilstart") {
         std::scoped_lock lock(stateMutex);
         auto& state = State(actor, now);
+        CancelPendingBash(actor, state);
         rules.cancelAttack(actor->GetFormID(), state.stage, now);
         state.nextStage = true;
         SettleFreeCounterattack(actor, state, now);
@@ -330,7 +422,34 @@ struct GraphHooks {
         const auto event = Lower(name.c_str());
         const auto now = Now();
         const bool request = ManageAttack(actor) && !Ranged(actor) && AttackRequest(event);
+        const bool bash = ManageAttack(actor) && BashEvent(event);
+        // Director: NPC melee attacks against the player need an attack slot.
+        RE::Actor* slotTarget = nullptr;
+        bool slotGranted = false;
+        if (request && !actor->IsPlayerRef()) {
+            slotTarget = DirectorTarget(actor);
+            if (slotTarget) {
+                const auto slot = [&] {
+                    std::scoped_lock lock(stateMutex);
+                    return aiRules.tryAcquire(slotTarget->GetFormID(), actor->GetFormID(), now, RandomUnit());
+                }();
+                if (!slot.granted) {
+                    Trace(actor, "slot-denied", 0, 0, static_cast<int>(slot.reason));
+                    return false;
+                }
+                slotGranted = true;
+                if (slot.retaliating) Trace(actor, "slot-retaliate", 0, 0);
+            }
+        }
+        if (bash && !BeginBash(actor, now)) {
+            if (actor->IsPlayerRef()) RE::HUDMenu::FlashMeter(RE::ActorValue::kStamina);
+            return false;
+        }
         if (request && (actor->IsStaggered() || !Begin(actor, event.find("power") != std::string::npos, now))) {
+            if (slotGranted) {
+                std::scoped_lock lock(stateMutex);
+                aiRules.release(slotTarget->GetFormID(), actor->GetFormID());
+            }
             if (actor->IsPlayerRef()) RE::HUDMenu::FlashMeter(RE::ActorValue::kStamina);
             return false;
         }
@@ -343,6 +462,18 @@ struct GraphHooks {
             rules.cancelAttack(actor->GetFormID(), state.stage, now);
             state.nextStage = true;
             Trace(actor, "dispatch-failed", state.stage, 0);
+        }
+        // Director: the slot lives for its window regardless of how this swing
+        // ended; expiry and rotation are handled lazily by the ledger. A bash
+        // that failed to dispatch (rejected IDLE, supersede) restores the
+        // cooldown exactly like a retry.
+        if (bash && !result) {
+            std::scoped_lock lock(stateMutex);
+            auto& state = State(actor, now);
+            CancelPendingBash(actor, state);
+            rules.cancelAttack(actor->GetFormID(), state.stage, now);
+            state.nextStage = true;
+            Trace(actor, "bash-dispatch-failed", state.stage, 0);
         }
         return result;
     }
@@ -636,6 +767,14 @@ PRECISION_API::PreHitCallbackReturn PreHit(const PRECISION_API::PrecisionHitData
     if (!config.perfectBlock || (!defender->IsPlayerRef() && !config.npcPerfectBlock) ||
         !defender->IsBlocking() || defender->IsStaggered() || Unblockable(attacker) ||
         !WithinBlockCone(defender, attacker)) {
+        // Director: the target (defender) damaging a circling attacker opens
+        // that attacker's retaliation window. Only the player's hits arm it
+        // when playerOnly is on, matching DirectorTarget's scope.
+        if (config.director && !defender->IsPlayerRef() &&
+            (attacker->IsPlayerRef() || !config.directorPlayerOnly)) {
+            std::scoped_lock lock(stateMutex);
+            aiRules.onTargetDamagedAttacker(attacker->GetFormID(), defender->GetFormID(), now);
+        }
         const auto poise = ApplyDefenderPoise(attacker, defender, false, now);
         if (poise.broke) defender->NotifyAnimationGraph("staggerStart");
         FlashPoiseResult(defender, poise);
@@ -734,6 +873,7 @@ class LifecycleEvents final : public RE::BSTEventSink<RE::TESObjectLoadedEvent>,
             std::scoped_lock lock(stateMutex);
             rules.resetActor(event->formID);
             poiseRules.resetActor(static_cast<Core::ActorId>(event->formID));
+            aiRules.resetActor(static_cast<Core::ActorId>(event->formID));
             actors.erase(event->formID);
         }
         return RE::BSEventNotifyControl::kContinue;
@@ -745,6 +885,7 @@ class LifecycleEvents final : public RE::BSTEventSink<RE::TESObjectLoadedEvent>,
                 std::scoped_lock lock(stateMutex);
                 rules.resetSession();
                 poiseRules.resetSession();
+                aiRules.resetSession();
                 actors.clear();
             }
             else {
@@ -765,6 +906,7 @@ bool InitializeRuntime() {
     for (const auto& diagnostic : settings.diagnostics) SKSE::log::warn("{}", diagnostic);
     rules.setSettings(config.rules);
     if (config.poise) poiseRules.setSettings(config.poiseSettings);
+    aiRules.setSettings(config.aiSettings);
     if (!config.enabled) { SKSE::log::info("Disabled in configuration."); return true; }
     GraphHooks<false>::Install();
     GraphHooks<true>::Install();
@@ -783,10 +925,10 @@ bool InitializeRuntime() {
         parryVisual = config.parryVisual;
     }
     SKSE::log::info("Capabilities: graph stamina=true; attack IDLE gates={}; Precision melee parry={}; "
-        "bow draw drain={}; poise={}; TrueHUD poise bar={}; parry sfx={}; parry vfx={}; VR={}",
+        "bow draw drain={}; poise={}; TrueHUD poise bar={}; parry sfx={}; parry vfx={}; director={}; VR={}",
         config.patchAttackIdles, precisionReady, config.bowDrawDrainPerSecond, config.poise,
         trueHudReady, parrySoundWeaponDesc != nullptr || parrySoundShieldDesc != nullptr,
-        parryVisual, REL::Module::IsVR());
+        parryVisual, config.director, REL::Module::IsVR());
     if (!precisionReady) SKSE::log::warn("Perfect blocking requires a compatible Precision API. Stamina features remain available.");
     if (config.poise && config.poiseHud && !trueHudReady)
         SKSE::log::warn("Poise is enabled but the TrueHUD poise bar is unavailable. Poise rules still apply.");
@@ -799,6 +941,7 @@ void ResetSession() {
     std::scoped_lock lock(stateMutex);
     rules.resetSession();
     poiseRules.resetSession();
+    aiRules.resetSession();
     actors.clear();
 }
 

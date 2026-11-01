@@ -470,6 +470,40 @@ diagnostic behavior are already generic.
     `tools/package.py` re-packaged `dist/`, DLL + INI synced to
     `/mnt/mods/Amaranth/mods/Apex Combat/SKSE/Plugins/`.
   - README: 12 Director config table rows added.
+- **Milestone 0.3 round 2 (uncommitted)** — runtime admission wiring in
+  `src/runtime/Runtime.cpp`:
+  - `aiRules` instance alongside `rules`/`poiseRules`; setSettings at init
+    (unconditional — bash stamina cost applies even with the director off),
+    resetActor on unload, resetSession on load/main-menu.
+  - Bash discipline: `BashEvent()` matcher (`bashstart`, `bashpowerstart`,
+    `mcobashstart`, `bfco_bashstart`); `BeginBash()` gates NPC bashes through
+    `admitBash` (cooldown trace `bash-denied-cooldown` with remaining ms,
+    stamina trace `bash-denied-stamina`), then rides the ordinary
+    admission/commit path via the DualWield custom-cost kind with
+    `bashStaminaCost` as the nominal cost — SCAR rejection, exhaustion,
+    and the existing regen delay all apply unchanged. `bashPending` latch +
+    `CancelPendingBash()` restore the cooldown on rejected/superseded
+    begins, dispatch failure, attackstop/stagger/recoil, matching the
+    counterattack re-arm pattern. Player bashes skip the cooldown but pay
+    the stamina cost.
+  - Attack slots: `DirectorTarget()` resolves the NPC's combat target via
+    `Actor::combatController->targetHandle`; gated on `config.director`,
+    non-player attacker, and `directorPlayerOnly` (player targets only).
+    Slot acquire (`tryAcquire` with `RandomUnit()` window sample) happens
+    before admission; denial returns false with trace `slot-denied`, and
+    a retaliation grant traces `slot-retaliate`. The slot is released only
+    if `Begin` fails afterwards; otherwise it lives for its window (lazy
+    expiry/rotation in the ledger).
+  - Retaliation arming: PreHit unblocked branch calls
+    `onTargetDamagedAttacker(target=player, attacker=NPC)` when a
+    director-scoped target damages an NPC.
+  - `RandomUnit()`: `std::mt19937` + `generate_canonical<float,24>` in
+    [0,1) for window draws (reaction/proactive rolls are still pure-core
+    and unwired — the turtle state machine round consumes them).
+  - Capability log line gained `director={}`.
+  - Build: native tests green (5 CTest + 7 tools), local-cross linked
+    clean, audit-dll clean (x64, 3 exports), re-packaged, DLL synced to
+    the MO2 mod dir (sha256 verified).
 
 ## Next steps (execute in order)
 
