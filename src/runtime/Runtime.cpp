@@ -148,12 +148,13 @@ float ActiveCostMultiplier(RE::Actor* actor, TimeMs now) {
     return Core::costMultiplier(found->second.discountPercent);
 }
 
-// Vanilla "Restore Stamina" magic effect (Skyrim.esm).
-constexpr RE::FormID kRestoreStaminaEffect = 0x0003EB16;
+// Vanilla "Restore Stamina" magic effect (Skyrim.esm). Reserved for the
+// AddTarget hook (currently disabled, see below).
+[[maybe_unused]] constexpr RE::FormID kRestoreStaminaEffect = 0x0003EB16;
 
 // Arms the potion discount on the drinker. No refresh: a second potion while
 // one is still active changes nothing. Caller must hold stateMutex.
-void ApplyPotionDiscount(RE::Actor* actor, float magnitude, TimeMs now) {
+[[maybe_unused]] void ApplyPotionDiscount(RE::Actor* actor, float magnitude, TimeMs now) {
     auto& state = State(actor, now);
     if (state.discountUntil > now) return;
     const auto tier = Core::discountFor(config.potionSettings, magnitude);
@@ -669,33 +670,16 @@ struct UpdateHooks {
     }
 };
 
-// MagicTarget::AddTarget hook (vtable slot 0x01): detects Restore Stamina
-// potion application and arms the timed cost discount. The vanilla restore
-// always runs; we only observe it. The MagicTarget vtable sits at index 4 of
-// the Character/PlayerCharacter tables (after the four TESObjectREFR bases).
-template<bool Player>
-struct MagicTargetHooks {
-    static inline REL::Relocation<bool (*)(RE::MagicTarget*, RE::MagicTarget::AddTargetData&)> addTarget;
-
-    static bool Hook(RE::MagicTarget* self, RE::MagicTarget::AddTargetData& data) {
-        const bool added = addTarget(self, data);
-        if (!added || !StableGameplay()) return added;
-        auto* actor = static_cast<RE::Actor*>(self);
-        if (!actor || !EligibleActor(actor)) return added;
-        if (!config.potionSettings.enabled || !data.magicItem || !data.effect || !data.effect->baseEffect)
-            return added;
-        if (data.magicItem->GetSpellType() != RE::MagicSystem::SpellType::kPotion) return added;
-        if (data.effect->baseEffect->GetFormID() != kRestoreStaminaEffect) return added;
-        std::scoped_lock lock(stateMutex);
-        ApplyPotionDiscount(actor, data.magnitude, Now());
-        return added;
-    }
-
-    static void Install() {
-        REL::Relocation<std::uintptr_t> table{Player ? RE::VTABLE_PlayerCharacter[4] : RE::VTABLE_Character[4]};
-        addTarget = table.write_vfunc(0x01, Hook);
-    }
-};
+// MagicTarget::AddTarget hook is DISABLED pending a verified vtable index.
+// Two crash logs (SkyrimSE.exe+01D123B lock xadd; "tried to execute memory"
+// with ApexCombat.dll+0x3A41C on the stack) both began immediately after this
+// hook shipped and both occur during magic-effect application on dying NPCs.
+// Everything else in 0.4 (regen mult, dodge cost, sprint/bow discount,
+// PotionRules core) is independent and stays; potions simply do not arm the
+// discount until the hook is re-landed against a verified index.
+// TODO(0.4.1): re-land with the MagicTarget vtable index validated at runtime
+// (e.g. read slot 0x01 and confirm it resolves to Actor::AddTarget's known
+// address, or hook via a mid-function trampoline instead of write_vfunc).
 
 // --- Shield-turtle driver ---------------------------------------------------
 // While an NPC circles, it holds block and strafes around its target until an
@@ -1201,8 +1185,7 @@ bool InitializeRuntime() {
     GraphHooks<true>::Install();
     UpdateHooks<false>::Install();
     UpdateHooks<true>::Install();
-    MagicTargetHooks<false>::Install();
-    MagicTargetHooks<true>::Install();
+    // MagicTargetHooks intentionally not installed (see note above).
     PatchAttackIdles();
     if (auto* scripts = RE::ScriptEventSourceHolder::GetSingleton()) scripts->AddEventSink<RE::TESObjectLoadedEvent>(&lifecycle);
     if (auto* ui = RE::UI::GetSingleton()) ui->AddEventSink<RE::MenuOpenCloseEvent>(&lifecycle);
