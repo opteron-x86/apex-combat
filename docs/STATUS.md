@@ -5,7 +5,7 @@ Update it at the end of every session: mark completed work, record new
 decisions with their evidence, and rewrite "Next steps" so a fresh session
 can resume without re-deriving context.
 
-Last updated: 2026-11-01 (session: milestone 0.3 round 1 — AiRules core + [Director] config shipped, director disabled by default)
+Last updated: 2026-11-01 (session: 0.4 — stamina regen tuning + stamina potion rework; all layers green, pending commit)
 
 ## Project
 
@@ -18,8 +18,8 @@ bash discipline, shield-turtle behavior) as a full native replacement
 for Wait Your Turn Redux + Enhanced Combat AI.
 
 - Repo: `https://github.com/opteron-x86/apex-combat`
-- Branch: `feat/stamina-parry-foundation` @ `31fa9de` + uncommitted 0.3
-  round (AiRules core + config); master merged and pushed at `31fa9de`.
+- Branch: `feat/stamina-parry-foundation` @ `a92a45a` + uncommitted 0.4
+  (stamina regen + potion rework); pushed through `a92a45a`.
 - Base: `b11dc99`
 - Do NOT commit unless explicitly asked; the user has authorized commits
   so far (commit + push after each feature round).
@@ -581,24 +581,63 @@ diagnostic behavior are already generic.
   - Build: native tests green, local-cross linked clean.
 ## Next steps (execute in order)
 
-1. Milestone 0.3 (design: `docs/MILESTONE-0.3-combat-ai-director.md`):
-   runtime admission wiring in `src/runtime/Runtime.cpp` — `AiRules`
-   instance + mutex-protected bash gate at bash begins (with
-   `cancelBash` on SCAR rejection / supersede / cancellation / expiry,
-   same re-arm pattern as counterattacks), bash stamina debit through
-   the existing `beginAttack`/`commitAttack` path, slot acquire/release
-   on NPC attack begins/commits targeting the player,
-   `onTargetDamagedAttacker` from PreHit, traces
-   (`bash-denied-cooldown`/`bash-denied-stamina`/`bash-reaction`).
-   Then shield-turtle state machine, circling movement, in-game
-   validation, retire WYR + ECAI.
-2. Milestone 0.2 remainder (issue #6): For Honor counterattack effect
+1. Milestone 0.2 remainder (issue #6): For Honor counterattack effect
    adapters (trace the actual plugin records — FormKeys 0x5F5/0x89F/
    0x8BD via Variable01/Variable03 per the audit doc). Poise HUD owner
    is settled: TrueHUD special resource bar shipped in `88dea79`.
-3. Consolidation roadmap follow-ups (user's 3819-mod setup, after 0.3):
-   stamina regen + stagger knobs, per-enemy styles, SCAR-AE fold-in
-   (github.com/doodlum/SCAR-AE) as a separate later decision.
+2. Issue #5 long-tail acceptance: save/load, menus, weapon changes
+   mid-swing, sprint attacks (jump attacks excluded).
+3. Consolidation roadmap follow-ups (user's 3819-mod setup): per-enemy
+   styles, SCAR-AE fold-in (github.com/doodlum/SCAR-AE) as a separate
+   later decision.
+4. 0.4 follow-ups after in-game validation: regen pacing feedback,
+   discount tier feel, whether NPCs drinking potions should also gain
+   the discount (currently they do — symmetric with costs).
+
+## 0.4 — Stamina regen tuning + stamina potion rework (shipped this session)
+
+Gravitas/WYR/ECAI all confirmed disabled in the KINMUNE CS profile;
+Apex fully owns stamina pacing, so regen and potion behavior moved
+in-house with no coexistence constraints.
+
+- `PotionRules` (core, pure): `discountFor(magnitude)` maps a Restore
+  Stamina potion magnitude to a `(percent, seconds)` tier using the
+  vanilla thresholds 25/50/75/100/150/9999 (verified from Skyrim.esm
+  RestoreStamina01..06; MGEF FormID `0x0003EB16`). Modded potions
+  floor to the nearest lower tier. Defaults: 10/20/30/50/75%, ultimate
+  100%; 60s standard, 20s ultimate. `costMultiplier()` clamps to
+  [0, 1].
+- Configuration: `[Stamina] regenMult = 1.5` (player-only, 0.1..10),
+  `dodgeStaminaCost = 20`; new `[Potions]` section (enabled, six
+  percents, two durations). `"potions"` added to known sections.
+- Runtime:
+  - `ActorState.discountUntil/discountPercent`; **no-refresh stacking**
+    (a second potion while active does nothing).
+  - `MagicTargetHooks` — `MagicTarget::AddTarget` vfunc 0x01 at vtable
+    index 4 (after TESObjectREFR's four bases) on Character and
+    PlayerCharacter: filters potions with a Restore Stamina effect and
+    arms the discount from `AddTargetData.magnitude`. The vanilla
+    restore itself is untouched.
+  - Discount applied to every Apex-owned cost: attack/bash admission
+    debit, dodge (new Apex-owned cost — MCO-Dodge fStaminaCost must be
+    set to 0), bow-draw drain, and the vanilla sprint drain (scales
+    `fSprintStaminaDrainPerSec` while active, restores the captured
+    baseline on expiry/session reset). Blocked hits are never
+    discounted.
+  - Player regen: `kStaminaRateMult` AV = `100 * regenMult`, written
+    only on drift; NPCs keep vanilla regen so exhaustion punish
+    windows stay meaningful.
+  - Traces: `potion-discount`, `dodge-cost`.
+- Tests: `tests/PotionRulesTests.cpp` (tier mapping, flooring, edge
+  inputs, custom values, multiplier bounds); ConfigurationTests gained
+  `potionAndRegenConfiguration()` (defaults, full parse, 10 invalid
+  rejections). All 6 CTest suites + 7 Python tests green.
+- Build: native green, local-cross linked clean, audit-dll clean
+  (x64, 3 SKSE exports), packaged, DLL + INI synced to the MO2 mod
+  dir (sha256 verified).
+- User action required: set MCO-Dodge `fStaminaCost` to 0 in its MCM
+  so dodge cost is not double-charged; then validate in game (drink
+  each tier with trace on, check cost drops and regen pacing).
 
 ## Open items / parked
 

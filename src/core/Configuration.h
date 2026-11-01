@@ -3,6 +3,7 @@
 #include "AiRules.h"
 #include "CombatRules.h"
 #include "PoiseRules.h"
+#include "PotionRules.h"
 
 #include <filesystem>
 #include <string>
@@ -53,6 +54,14 @@ struct Configuration {
     float dodgeRegenDelaySeconds{0.5F};
     float exhaustionRecoveryDelaySeconds{1.0F};
     float bowDrawDrainPerSecond{5.0F};
+    // Player-only multiplier on the vanilla stamina regen rate, applied via
+    // the StaminaRateMult actor value: 1 is vanilla, 1.5 is 50% faster.
+    float staminaRegenMult{1.5F};
+    // Stamina a dodge costs the player. Apex owns dodge costing; set any
+    // dodge-framework stamina cost to zero so it is not charged twice.
+    float dodgeStaminaCost{20.0F};
+    // Stamina-potion cost discount (timed, no refresh on a second potion).
+    Core::PotionSettings potionSettings;
     bool trace{false};
     bool patchAttackIdles{true};
 };

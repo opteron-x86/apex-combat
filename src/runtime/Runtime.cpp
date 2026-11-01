@@ -8,6 +8,7 @@
 #include "core/Configuration.h"
 #include "core/ParryContacts.h"
 #include "core/PoiseRules.h"
+#include "core/PotionRules.h"
 #include "precision/PrecisionAPI.h"
 #include "truehud/TrueHUDAPI.h"
 
@@ -69,6 +70,11 @@ struct ActorState {
     bool turtleClockwise{false};
     float turtleDirection{0.0F};  // actor-local degrees of the last strafe write
     TimeMs directorLastTick{0};
+    // Stamina-potion discount: a drunk Restore Stamina potion grants a timed
+    // cost discount. No refresh: while discountUntil is in the future a
+    // second potion leaves both fields untouched.
+    TimeMs discountUntil{0};
+    float discountPercent{0.0F};
     Core::ParryContacts contacts;
 };
 std::unordered_map<RE::FormID, ActorState> actors;
@@ -132,6 +138,64 @@ ActorState& State(RE::Actor* actor, TimeMs now) {
     state.lastSeen = now;
     return state;
 }
+
+// Active potion discount as a cost multiplier (1 = full price). Reads the
+// map without locking: every mutation happens on the game thread, which is
+// also the only caller context.
+float ActiveCostMultiplier(RE::Actor* actor, TimeMs now) {
+    const auto found = actors.find(actor->GetFormID());
+    if (found == actors.end() || now >= found->second.discountUntil) return 1.0F;
+    return Core::costMultiplier(found->second.discountPercent);
+}
+
+// Vanilla "Restore Stamina" magic effect (Skyrim.esm).
+constexpr RE::FormID kRestoreStaminaEffect = 0x0003EB16;
+
+// Arms the potion discount on the drinker. No refresh: a second potion while
+// one is still active changes nothing. Caller must hold stateMutex.
+void ApplyPotionDiscount(RE::Actor* actor, float magnitude, TimeMs now) {
+    auto& state = State(actor, now);
+    if (state.discountUntil > now) return;
+    const auto tier = Core::discountFor(config.potionSettings, magnitude);
+    if (tier.percent <= 0.0F) return;
+    state.discountUntil = now + static_cast<TimeMs>(tier.seconds) * 1000;
+    state.discountPercent = tier.percent;
+    Trace(actor, "potion-discount", 0, tier.percent, static_cast<int>(tier.seconds));
+}
+
+// --- Sprint-drain discount ---------------------------------------------------
+// The engine scales fSprintStaminaDrainPerSec per frame; while a discount is
+// active we scale that setting down and restore the captured baseline when it
+// ends. The restore happens lazily from the per-frame hook and from session
+// resets, so a reload cannot strand a modified global.
+float sprintDrainBaseline{-1.0F};
+bool sprintDrainScaled{false};
+
+RE::Setting* SprintDrainSetting() {
+    auto* collection = RE::GameSettingCollection::GetSingleton();
+    return collection ? collection->GetSetting("fSprintStaminaDrainPerSec") : nullptr;
+}
+
+void UpdateSprintDrainDiscount(bool discountActive, float multiplier) {
+    auto* setting = SprintDrainSetting();
+    if (!setting) return;
+    if (discountActive) {
+        if (!sprintDrainScaled) {
+            sprintDrainBaseline = setting->GetFloat();
+            sprintDrainScaled = true;
+        }
+        setting->SetFloat(sprintDrainBaseline * multiplier);
+        return;
+    }
+    if (sprintDrainScaled) {
+        setting->SetFloat(sprintDrainBaseline);
+        sprintDrainScaled = false;
+        sprintDrainBaseline = -1.0F;
+    }
+}
+
+void RestoreSprintDrain() { UpdateSprintDrainDiscount(false, 1.0F); }
+
 
 // Applies the exhaustion recovery delay exactly on a false-true flip of the
 // observed exhaustion state. Caller must hold stateMutex.
@@ -352,9 +416,13 @@ bool Commit(RE::Actor* actor, TimeMs now) {
     state.bashRecordedAt = 0;
     state.bashStage = 0;
     if (result.staminaDebit > 0) {
-        actor->AsActorValueOwner()->DamageActorValue(RE::ActorValue::kStamina, result.staminaDebit);
-        auto* process = actor->GetActorRuntimeData().currentProcess;
-        if (process) process->UpdateRegenDelay(RE::ActorValue::kStamina, config.regenDelaySeconds);
+        // Potion discount scales every Apex-owned attack/bash debit.
+        const float debit = result.staminaDebit * ActiveCostMultiplier(actor, now);
+        if (debit > 0) {
+            actor->AsActorValueOwner()->DamageActorValue(RE::ActorValue::kStamina, debit);
+            auto* process = actor->GetActorRuntimeData().currentProcess;
+            if (process) process->UpdateRegenDelay(RE::ActorValue::kStamina, config.regenDelaySeconds);
+        }
     }
     if (result.freeCounterattack) SettleFreeCounterattack(actor, state, now);
     ObserveExhaustion(actor, rules.observeStamina(actor->GetFormID(), Stamina(actor), now).exhausted, now);
@@ -381,12 +449,22 @@ bool IncomingEvent(RE::Actor* actor, std::string_view event) {
         event == "staggerstart" || event == "recoilstart" || event == "weaponsheathe") BlockEvent(actor, false, now);
 
     // A dodge starts its own regen delay regardless of admission scope.
-    // Matches "*dodge*start*" style animation events (e.g. DMCO); no dodge charge.
+    // Matches "*dodge*start*" style animation events (e.g. DMCO). Apex owns
+    // the dodge cost (dodge frameworks must charge 0); the potion discount
+    // scales it, and a discounted dodge never blocks admission.
     if (event.find("dodge") != std::string_view::npos && event.find("start") != std::string_view::npos) {
         auto* process = actor->GetActorRuntimeData().currentProcess;
         if (process) {
             process->UpdateRegenDelay(RE::ActorValue::kStamina, config.dodgeRegenDelaySeconds);
-            Trace(actor, "dodge-delay", 0, config.dodgeRegenDelaySeconds);
+            if (config.dodgeStaminaCost > 0.0F) {
+                const float cost = config.dodgeStaminaCost * ActiveCostMultiplier(actor, now);
+                if (cost > 0) {
+                    actor->AsActorValueOwner()->DamageActorValue(RE::ActorValue::kStamina, cost);
+                    Trace(actor, "dodge-cost", 0, cost);
+                }
+            } else {
+                Trace(actor, "dodge-delay", 0, config.dodgeRegenDelaySeconds);
+            }
         }
         return true;
     }
@@ -554,6 +632,21 @@ struct UpdateHooks {
             }
         }
         if constexpr (!Player) DirectorTick(actor, Now());
+        if constexpr (Player) {
+            const auto now = Now();
+            // Player-only stamina regen multiplier via StaminaRateMult. The
+            // AV resets with the actor; write only on drift so we do not
+            // fight the engine every frame.
+            const float regenTarget = config.staminaRegenMult * 100.0F;
+            auto* owner = actor->AsActorValueOwner();
+            if (std::fabs(owner->GetActorValue(RE::ActorValue::kStaminaRateMult) - regenTarget) > 0.5F)
+                owner->SetActorValue(RE::ActorValue::kStaminaRateMult, regenTarget);
+            // Sprint drain follows the potion discount; expiry restores the
+            // captured baseline here.
+            const auto found = actors.find(actor->GetFormID());
+            const bool discount = found != actors.end() && now < found->second.discountUntil;
+            UpdateSprintDrainDiscount(discount, discount ? Core::costMultiplier(found->second.discountPercent) : 1.0F);
+        }
         if (config.bowDrawDrainPerSecond <= 0.0F) return;
         auto* actorState = actor->AsActorState();
         const auto attack = actorState ? actorState->GetAttackState() : RE::ATTACK_STATE_ENUM::kNone;
@@ -562,7 +655,8 @@ struct UpdateHooks {
         if (attack != RE::ATTACK_STATE_ENUM::kBowDraw &&
             attack != RE::ATTACK_STATE_ENUM::kBowAttached &&
             attack != RE::ATTACK_STATE_ENUM::kBowDrawn) return;
-        const float drain = config.bowDrawDrainPerSecond * delta;
+        const float drain = config.bowDrawDrainPerSecond * delta * ActiveCostMultiplier(actor, Now());
+        if (drain <= 0.0F) return;
         actor->AsActorValueOwner()->DamageActorValue(RE::ActorValue::kStamina, drain);
         auto* process = actor->GetActorRuntimeData().currentProcess;
         if (process) process->UpdateRegenDelay(RE::ActorValue::kStamina, config.regenDelaySeconds);
@@ -572,6 +666,34 @@ struct UpdateHooks {
     static void Install() {
         REL::Relocation<std::uintptr_t> table{Player ? RE::VTABLE_PlayerCharacter[0] : RE::VTABLE_Character[0]};
         update = table.write_vfunc(0xAD, Hook);
+    }
+};
+
+// MagicTarget::AddTarget hook (vtable slot 0x01): detects Restore Stamina
+// potion application and arms the timed cost discount. The vanilla restore
+// always runs; we only observe it. The MagicTarget vtable sits at index 4 of
+// the Character/PlayerCharacter tables (after the four TESObjectREFR bases).
+template<bool Player>
+struct MagicTargetHooks {
+    static inline REL::Relocation<bool (*)(RE::MagicTarget*, RE::MagicTarget::AddTargetData&)> addTarget;
+
+    static bool Hook(RE::MagicTarget* self, RE::MagicTarget::AddTargetData& data) {
+        const bool added = addTarget(self, data);
+        if (!added || !StableGameplay()) return added;
+        auto* actor = static_cast<RE::Actor*>(self);
+        if (!actor || !EligibleActor(actor)) return added;
+        if (!config.potionSettings.enabled || !data.magicItem || !data.effect || !data.effect->baseEffect)
+            return added;
+        if (data.magicItem->GetSpellType() != RE::MagicSystem::SpellType::kPotion) return added;
+        if (data.effect->baseEffect->GetFormID() != kRestoreStaminaEffect) return added;
+        std::scoped_lock lock(stateMutex);
+        ApplyPotionDiscount(actor, data.magnitude, Now());
+        return added;
+    }
+
+    static void Install() {
+        REL::Relocation<std::uintptr_t> table{Player ? RE::VTABLE_PlayerCharacter[4] : RE::VTABLE_Character[4]};
+        addTarget = table.write_vfunc(0x01, Hook);
     }
 };
 
@@ -1053,6 +1175,7 @@ class LifecycleEvents final : public RE::BSTEventSink<RE::TESObjectLoadedEvent>,
                 poiseRules.resetSession();
                 aiRules.resetSession();
                 actors.clear();
+                RestoreSprintDrain();
             }
             else {
                 std::scoped_lock lock(stateMutex);
@@ -1078,6 +1201,8 @@ bool InitializeRuntime() {
     GraphHooks<true>::Install();
     UpdateHooks<false>::Install();
     UpdateHooks<true>::Install();
+    MagicTargetHooks<false>::Install();
+    MagicTargetHooks<true>::Install();
     PatchAttackIdles();
     if (auto* scripts = RE::ScriptEventSourceHolder::GetSingleton()) scripts->AddEventSink<RE::TESObjectLoadedEvent>(&lifecycle);
     if (auto* ui = RE::UI::GetSingleton()) ui->AddEventSink<RE::MenuOpenCloseEvent>(&lifecycle);
@@ -1091,10 +1216,12 @@ bool InitializeRuntime() {
         parryVisual = config.parryVisual;
     }
     SKSE::log::info("Capabilities: graph stamina=true; attack IDLE gates={}; Precision melee parry={}; "
-        "bow draw drain={}; poise={}; TrueHUD poise bar={}; parry sfx={}; parry vfx={}; director={}; VR={}",
+        "bow draw drain={}; poise={}; TrueHUD poise bar={}; parry sfx={}; parry vfx={}; director={}; "
+        "stamina regen mult={}; dodge cost={}; potion discount={}; VR={}",
         config.patchAttackIdles, precisionReady, config.bowDrawDrainPerSecond, config.poise,
         trueHudReady, parrySoundWeaponDesc != nullptr || parrySoundShieldDesc != nullptr,
-        parryVisual, config.director, REL::Module::IsVR());
+        parryVisual, config.director, config.staminaRegenMult, config.dodgeStaminaCost,
+        config.potionSettings.enabled, REL::Module::IsVR());
     if (!precisionReady) SKSE::log::warn("Perfect blocking requires a compatible Precision API. Stamina features remain available.");
     if (config.poise && config.poiseHud && !trueHudReady)
         SKSE::log::warn("Poise is enabled but the TrueHUD poise bar is unavailable. Poise rules still apply.");
@@ -1109,6 +1236,9 @@ void ResetSession() {
     poiseRules.resetSession();
     aiRules.resetSession();
     actors.clear();
+    // A session change while a discount is active must not strand the scaled
+    // sprint-drain game setting.
+    RestoreSprintDrain();
 }
 
 void StartSession() {

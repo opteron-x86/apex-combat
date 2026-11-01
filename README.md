@@ -47,6 +47,8 @@ All options live in `<game>/Data/SKSE/Plugins/ApexCombat.ini`. Restart the game 
 | Stamina | `exhaustionRecoveryDelaySeconds` | `1.0` | Stamina regen delay after exhaustion. |
 | Stamina | `bowDrawDrainPerSecond` | `5.0` | Stamina drained per second while a bow is drawn; `0` disables it. |
 | Stamina | `attackCommitTimeoutMs` | `1000` | Maximum time between admission and commitment. |
+| Stamina | `regenMult` | `1.5` | Player-only stamina regen multiplier, `0.1`–`10`; `1` is vanilla. NPCs keep vanilla regen. |
+| Stamina | `dodgeStaminaCost` | `20` | Apex-owned dodge cost; set your dodge framework's cost to `0` so it is not charged twice. |
 | PerfectBlock | `enabled` / `npcEnabled` | `true` | Perfect-block rewards for the player / NPCs. |
 | PerfectBlock | `windowMs` | `150` | Timing window opened by a fresh block action. |
 | PerfectBlock | `restore` | `25` | Stamina restored by one perfect block, capped by the missing amount. |
@@ -79,6 +81,11 @@ All options live in `<game>/Data/SKSE/Plugins/ApexCombat.ini`. Restart the game 
 | Director | `bashStaminaCost` | `25` | Stamina a bash costs the basher, NPC and player alike. |
 | Director | `maxCircleSeconds` | `10.0` | A circling NPC with no opening for this long commits anyway. |
 | Director | `circleRadiusMin` / `circleRadiusMax` | `200` / `320` | Circling ring radius band for non-slot holders, in game units. |
+| Potions | `enabled` | `true` | Timed stamina-cost discount from Restore Stamina potions; blocked hits are never discounted. |
+| Potions | `discountMinor` / `discountStandard` / `discountPlentiful` / `discountVigorous` / `discountExtreme` | `10/20/30/50/75` | Discount percent per vanilla tier (restore magnitude 25/50/75/100/150); modded potions floor to the nearest lower tier. |
+| Potions | `discountUltimate` | `100` | Ultimate tier (magnitude 9999) discount; `100` means free. |
+| Potions | `standardSeconds` | `60` | Discount duration for all non-ultimate tiers. No refresh: a second potion while active does nothing. |
+| Potions | `ultimateSeconds` | `20` | Discount duration for the ultimate tier. |
 | Debug | `trace` | `false` | Log every admission, commit, and parry decision. |
 
 ## Building

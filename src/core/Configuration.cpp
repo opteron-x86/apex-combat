@@ -71,7 +71,7 @@ bool knownSection(std::string_view section)
 {
     return section == "general" || section == "stamina" || section == "perfectblock" ||
            section == "counterattack" || section == "poise" || section == "director" ||
-           section == "debug";
+           section == "potions" || section == "debug";
 }
 
 bool knownKey(std::string_view key)
@@ -107,6 +107,12 @@ bool knownKey(std::string_view key)
            key == "director.bashproactivechance" || key == "director.bashstaminacost" ||
            key == "director.maxcircleseconds" || key == "director.circleradiusmin" ||
            key == "director.circleradiusmax" ||
+           key == "stamina.regenmult" || key == "stamina.dodgestaminacost" ||
+           key == "potions.enabled" || key == "potions.discountminor" ||
+           key == "potions.discountstandard" || key == "potions.discountplentiful" ||
+           key == "potions.discountvigorous" || key == "potions.discountextreme" ||
+           key == "potions.discountultimate" || key == "potions.standardseconds" ||
+           key == "potions.ultimateseconds" ||
            key == "debug.trace";
 }
 
@@ -135,6 +141,24 @@ bool apply(Configuration& config, const std::string& key, std::string_view value
         return number(value, 0.0F, 10.0F, config.exhaustionRecoveryDelaySeconds);
     if (key == "stamina.bowdrawdrainpersecond")
         return number(value, 0.0F, 10000.0F, config.bowDrawDrainPerSecond);
+    if (key == "stamina.regenmult") return number(value, 0.1F, 10.0F, config.staminaRegenMult);
+    if (key == "stamina.dodgestaminacost") return number(value, 0.0F, 10000.0F, config.dodgeStaminaCost);
+    if (key == "potions.enabled") return boolean(value, config.potionSettings.enabled);
+    if (key == "potions.discountminor") return number(value, 0.0F, 100.0F, config.potionSettings.discountMinor);
+    if (key == "potions.discountstandard")
+        return number(value, 0.0F, 100.0F, config.potionSettings.discountStandard);
+    if (key == "potions.discountplentiful")
+        return number(value, 0.0F, 100.0F, config.potionSettings.discountPlentiful);
+    if (key == "potions.discountvigorous")
+        return number(value, 0.0F, 100.0F, config.potionSettings.discountVigorous);
+    if (key == "potions.discountextreme")
+        return number(value, 0.0F, 100.0F, config.potionSettings.discountExtreme);
+    if (key == "potions.discountultimate")
+        return number(value, 0.0F, 100.0F, config.potionSettings.discountUltimate);
+    if (key == "potions.standardseconds")
+        return number(value, std::uint32_t{1}, std::uint32_t{3600}, config.potionSettings.standardSeconds);
+    if (key == "potions.ultimateseconds")
+        return number(value, std::uint32_t{1}, std::uint32_t{3600}, config.potionSettings.ultimateSeconds);
     if (key == "stamina.attackcommittimeoutms")
         return number(value, Core::TimeMs{1}, Core::TimeMs{10000}, rules.attackCommitTimeoutMs);
     if (key == "perfectblock.windowms")

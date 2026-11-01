@@ -355,6 +355,76 @@ circleRadiusMax=2001
     near(invalid.config.circleRadiusMax, 320);
 }
 
+void potionAndRegenConfiguration()
+{
+    const auto defaults = parseConfiguration("");
+    near(defaults.config.staminaRegenMult, 1.5F);
+    near(defaults.config.dodgeStaminaCost, 20);
+    check(defaults.config.potionSettings.enabled);
+    near(defaults.config.potionSettings.discountMinor, 10);
+    near(defaults.config.potionSettings.discountStandard, 20);
+    near(defaults.config.potionSettings.discountPlentiful, 30);
+    near(defaults.config.potionSettings.discountVigorous, 50);
+    near(defaults.config.potionSettings.discountExtreme, 75);
+    near(defaults.config.potionSettings.discountUltimate, 100);
+    check(defaults.config.potionSettings.standardSeconds == 60);
+    check(defaults.config.potionSettings.ultimateSeconds == 20);
+
+    const auto full = parseConfiguration(R"ini(
+[Stamina]
+regenMult=2.0
+dodgeStaminaCost=35
+[Potions]
+enabled=0
+discountMinor=5
+discountStandard=15
+discountPlentiful=25
+discountVigorous=40
+discountExtreme=60
+discountUltimate=90
+standardSeconds=45
+ultimateSeconds=15
+)ini");
+    check(full.diagnostics.empty());
+    near(full.config.staminaRegenMult, 2.0F);
+    near(full.config.dodgeStaminaCost, 35);
+    check(!full.config.potionSettings.enabled);
+    near(full.config.potionSettings.discountMinor, 5);
+    near(full.config.potionSettings.discountStandard, 15);
+    near(full.config.potionSettings.discountPlentiful, 25);
+    near(full.config.potionSettings.discountVigorous, 40);
+    near(full.config.potionSettings.discountExtreme, 60);
+    near(full.config.potionSettings.discountUltimate, 90);
+    check(full.config.potionSettings.standardSeconds == 45);
+    check(full.config.potionSettings.ultimateSeconds == 15);
+
+    const auto invalid = parseConfiguration(R"ini(
+[Stamina]
+regenMult=0.05
+dodgeStaminaCost=-1
+[Potions]
+discountMinor=-1
+discountStandard=101
+discountPlentiful=nan
+discountVigorous=inf
+discountExtreme=100.5
+discountUltimate=-0.1
+standardSeconds=0
+ultimateSeconds=3601
+)ini");
+    check(invalid.diagnostics.size() == 10);
+    near(invalid.config.staminaRegenMult, 1.5F);
+    near(invalid.config.dodgeStaminaCost, 20);
+    near(invalid.config.potionSettings.discountMinor, 10);
+    near(invalid.config.potionSettings.discountStandard, 20);
+    near(invalid.config.potionSettings.discountPlentiful, 30);
+    near(invalid.config.potionSettings.discountVigorous, 50);
+    near(invalid.config.potionSettings.discountExtreme, 75);
+    near(invalid.config.potionSettings.discountUltimate, 100);
+    check(invalid.config.potionSettings.standardSeconds == 60);
+    check(invalid.config.potionSettings.ultimateSeconds == 20);
+}
+
 void whitespaceCommentsAndCase()
 {
     const auto result = parseConfiguration(
@@ -550,6 +620,7 @@ int main(int argc, char** argv)
     defaultsAndCompleteConfiguration();
     poiseConfiguration();
     directorConfiguration();
+    potionAndRegenConfiguration();
     whitespaceCommentsAndCase();
     strictNumbersAndFiniteBounds();
     invalidBooleansDoNotEnableFeatures();
