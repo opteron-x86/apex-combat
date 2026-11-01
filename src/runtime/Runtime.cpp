@@ -45,6 +45,9 @@ struct ActorState {
     bool denied{false};
     bool nextStage{true};
     bool exhausted{false};
+    bool freePowerPending{false};
+    float freePowerBaseline{0.0F};
+    EventToken freePowerStage{0};
     TimeMs lastSeen{0};
     Core::ParryContacts contacts;
 };
@@ -188,14 +191,39 @@ bool Begin(RE::Actor* actor, bool power, TimeMs now) {
     auto& state = State(actor, now);
     float customCost = 0.0F;
     const auto kind = Kind(actor, power, customCost);
+    const float baseline = Stamina(actor);
     // Power attack costs remain owned by the game. Positive stamina is required.
-    auto result = rules.beginAttack(actor->GetFormID(), ++state.stage, kind, Stamina(actor), now, 0.0F, customCost);
+    auto result = rules.beginAttack(actor->GetFormID(), ++state.stage, kind, baseline, now, 0.0F, customCost);
     state.committed = false;
     state.denied = !result.accepted;
     state.nextStage = false;
+    // A free counterattack refunds the engine's own power-attack drain for one
+    // stage. The refund baseline is the stamina measured here, at the consuming
+    // begin: the core re-arms the reward on every retry begin, so the binding is
+    // refreshed per begin and the drop excludes stamina spent before this swing.
+    // The refund fires at the first settle point that observes the drop.
+    if (result.freeCounterattack) {
+        state.freePowerPending = true;
+        state.freePowerBaseline = baseline;
+        state.freePowerStage = state.stage;
+    }
     ObserveExhaustion(actor, result.exhausted, now);
     Trace(actor, result.accepted ? "admit" : "reject", state.stage, result.nominalCost, static_cast<int>(result.reason));
     return result.accepted;
+}
+
+// Refunds the engine's power-attack drain for an armed free counterattack, once
+// the drop is observed. Only the stage that spent the reward can settle, so
+// light attacks and later stages cannot trigger the refund; stage zero means no
+// consuming begin has bound the refund yet. Caller must hold stateMutex.
+void SettleFreeCounterattack(RE::Actor* actor, ActorState& state, TimeMs now) {
+    if (!state.freePowerPending || state.freePowerStage == 0 || state.stage != state.freePowerStage) return;
+    const float drop = state.freePowerBaseline - Stamina(actor);
+    if (drop <= 0.0F) return;
+    state.freePowerPending = false;
+    state.freePowerStage = 0;
+    actor->AsActorValueOwner()->RestoreActorValue(RE::ActorValue::kStamina, drop);
+    Trace(actor, "counterattack-refund", state.stage, drop);
 }
 
 bool Commit(RE::Actor* actor, TimeMs now) {
@@ -220,6 +248,7 @@ bool Commit(RE::Actor* actor, TimeMs now) {
         auto* process = actor->GetActorRuntimeData().currentProcess;
         if (process) process->UpdateRegenDelay(RE::ActorValue::kStamina, config.regenDelaySeconds);
     }
+    if (result.freeCounterattack) SettleFreeCounterattack(actor, state, now);
     ObserveExhaustion(actor, rules.observeStamina(actor->GetFormID(), Stamina(actor), now).exhausted, now);
     Trace(actor, result.engineOwnsCost ? "commit-engine-cost" : "commit", state.stage, result.staminaDebit);
     return true;
@@ -259,13 +288,29 @@ bool IncomingEvent(RE::Actor* actor, std::string_view event) {
         std::scoped_lock lock(stateMutex);
         auto& state = State(actor, now);
         if (state.committed) state.nextStage = true;
+        SettleFreeCounterattack(actor, state, now);
     } else if (event == "prehitframe" || event == "weaponswing" || event == "weaponleftswing") {
         if (!Commit(actor, now)) return false;
+    } else if (event == "attackrelease") {
+        // MCO release fires between commit and winstart; the engine's power-attack
+        // debit can land here, so settle as soon as the drop is observable.
+        std::scoped_lock lock(stateMutex);
+        auto& state = State(actor, now);
+        SettleFreeCounterattack(actor, state, now);
     } else if (event == "attackstop" || event == "staggerstart" || event == "recoilstart") {
         std::scoped_lock lock(stateMutex);
         auto& state = State(actor, now);
         rules.cancelAttack(actor->GetFormID(), state.stage, now);
         state.nextStage = true;
+        SettleFreeCounterattack(actor, state, now);
+    } else if (event == "attackend") {
+        std::scoped_lock lock(stateMutex);
+        auto& state = State(actor, now);
+        SettleFreeCounterattack(actor, state, now);
+        if (state.stage == state.freePowerStage) {
+            state.freePowerPending = false;
+            state.freePowerStage = 0;
+        }
     }
     return true;
 }
@@ -329,8 +374,19 @@ struct UpdateHooks {
     static void Hook(RE::Character* character, float delta) {
         update(character, delta);
         auto* actor = character ? static_cast<RE::Actor*>(character) : nullptr;
-        if (delta <= 0.0F || config.bowDrawDrainPerSecond <= 0.0F || !StableGameplay() ||
-            !EligibleActor(actor)) return;
+        if (delta <= 0.0F || !StableGameplay() || !EligibleActor(actor)) return;
+        // Per-frame fallback for the free counterattack refund: the engine's
+        // power-attack debit can land after every graph settle point. The map
+        // is only mutated on the game thread, so the unlocked find is safe
+        // here; the settle re-checks the pending state under the lock.
+        {
+            const auto found = actors.find(actor->GetFormID());
+            if (found != actors.end() && found->second.freePowerPending) {
+                std::scoped_lock lock(stateMutex);
+                SettleFreeCounterattack(actor, found->second, Now());
+            }
+        }
+        if (config.bowDrawDrainPerSecond <= 0.0F) return;
         auto* actorState = actor->AsActorState();
         const auto attack = actorState ? actorState->GetAttackState() : RE::ATTACK_STATE_ENUM::kNone;
         // kBowDraw/kBowAttached cover the pullback animation; kBowDrawn is the
@@ -543,9 +599,14 @@ void PlayParryFeedback(RE::Actor* attacker, RE::Actor* defender) {
 Core::PoiseResult ApplyDefenderPoise(RE::Actor* attacker, RE::Actor* defender, bool blocked, TimeMs now) {
     if (!config.poise) return {};
     std::scoped_lock lock(stateMutex);
+    // Attacks inside an active counterattack window deal bonus poise damage.
+    const auto attackerId = attacker->GetFormID();
+    const float multiplier = rules.counterattackActive(attackerId, now)
+        ? poiseRules.settings().counterattackPoiseMultiplier
+        : 1.0F;
     const auto result = poiseRules.applyDamage(defender->GetFormID(), PoiseKindFromWeapon(attacker),
         attacker->IsPowerAttacking(), blocked ? Core::PoiseSource::BlockedHit : Core::PoiseSource::Hit,
-        now);
+        now, multiplier);
     Trace(defender, result.broke ? "poise-break" : "poise-damage", 0, result.poiseAfter,
         static_cast<int>(result.reason));
     return result;
@@ -610,6 +671,14 @@ PRECISION_API::PreHitCallbackReturn PreHit(const PRECISION_API::PrecisionHitData
             parried = true;
             if (result.staminaRestore > 0) defender->AsActorValueOwner()->RestoreActorValue(
                 RE::ActorValue::kStamina, result.staminaRestore);
+            // The reward refund anchors here: this is the last guaranteed
+            // pre-drain observation before the counterattack power swing.
+            if (rules.grantCounterattack(defender->GetFormID(), now)) {
+                defenderState.freePowerPending = true;
+                defenderState.freePowerBaseline = Stamina(defender);
+                defenderState.freePowerStage = 0;
+                Trace(defender, "counterattack-grant", defenderState.hit, 0);
+            }
             Trace(defender, "perfect-parry", defenderState.hit, result.staminaRestore);
             if (config.poise) {
                 attackerPoise = poiseRules.applyDamage(attacker->GetFormID(), PoiseKindFromWeapon(attacker),

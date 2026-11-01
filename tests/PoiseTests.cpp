@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <source_location>
 #include <stdexcept>
 
@@ -95,6 +96,42 @@ void multipliersAndParry()
     near(nothing.poiseAfter, 50);
 }
 
+// The counterattack bonus multiplies hit and blocked contacts, stacks with the
+// power multiplier, and is ignored by the flat perfect-parry counter-damage.
+void counterattackPoiseBonus()
+{
+    PoiseRules rules;
+    // Sword light hit with the window bonus: 25 * 1.25.
+    const auto bonus = rules.applyDamage(1, PoiseKind::Sword, false, PoiseSource::Hit, 0, 1.25F);
+    check(bonus.applied);
+    near(bonus.poiseAfter, 68.75F);
+    // Stacks with the power multiplier: 20 * 1.5 * 1.25 = 37.5.
+    const auto power = rules.applyDamage(1, PoiseKind::Dagger, true, PoiseSource::Hit, 1, 1.25F);
+    near(power.poiseAfter, 31.25F);  // 100 - 68.75
+    // Blocked contacts take the bonus before the block reduction: 35 * 1.25 * 0.5.
+    const auto blocked = rules.applyDamage(2, PoiseKind::Mace, false, PoiseSource::BlockedHit, 0, 1.25F);
+    near(blocked.poiseAfter, 78.125F);
+    // The flat perfect-parry counter-damage ignores the multiplier.
+    const auto parry = rules.applyDamage(3, PoiseKind::Unarmed, false, PoiseSource::PerfectParry, 0, 1.25F);
+    near(parry.poiseAfter, 50);
+    // Multiplier 1.0 reproduces the plain damage.
+    PoiseRules plain;
+    const auto neutral = plain.applyDamage(1, PoiseKind::Sword, false, PoiseSource::Hit, 0, 1.0F);
+    near(neutral.poiseAfter, 75);
+    // Non-finite and negative multipliers are rejected as invalid input.
+    const auto nan = plain.applyDamage(2, PoiseKind::Sword, false, PoiseSource::Hit, 0,
+                                       std::numeric_limits<float>::quiet_NaN());
+    check(!nan.applied && nan.reason == PoiseRejectReason::InvalidInput);
+    const auto negative = plain.applyDamage(2, PoiseKind::Sword, false, PoiseSource::Hit, 1, -1.0F);
+    check(!negative.applied && negative.reason == PoiseRejectReason::InvalidInput);
+    // Settings validation rejects bonus multipliers below 1.
+    PoiseSettings weak;
+    weak.counterattackPoiseMultiplier = 0.5F;
+    bool rejected = false;
+    try { PoiseRules invalid(weak); } catch (const std::invalid_argument&) { rejected = true; }
+    check(rejected);
+}
+
 void validationAndResets()
 {
     PoiseSettings bad;
@@ -153,6 +190,7 @@ int main()
     damageBreakAndChainGuard();
     regenAndDamageDelay();
     multipliersAndParry();
+    counterattackPoiseBonus();
     validationAndResets();
     replacementSettingsClearState();
     std::cout << "poise tests: " << checks << " checks passed\n";

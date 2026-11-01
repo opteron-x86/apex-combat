@@ -45,7 +45,7 @@ void PoiseRules::validate(const PoiseSettings& settings)
         !validDamage(settings.daggerDamage) || !validDamage(settings.swordDamage) ||
         !validDamage(settings.axeDamage) || !validDamage(settings.maceDamage) ||
         !validDamage(settings.twoHandedDamage) || !validDamage(settings.unarmedDamage) ||
-        !validDamage(settings.powerMultiplier) || !validDamage(settings.blockedMultiplier) ||
+        !validDamage(settings.powerMultiplier) ||         !validDamage(settings.blockedMultiplier) || settings.counterattackPoiseMultiplier < 1.0F ||
         !validDamage(settings.perfectParryDamage) || !validDamage(settings.recoveryPerSecond) ||
         settings.recoveryDelayMs < 0 || settings.breakRecoveryMs < 0) {
         throw std::invalid_argument("Invalid poise settings");
@@ -78,11 +78,12 @@ float PoiseRules::observe(ActorState& state, TimeMs now)
 }
 
 PoiseResult PoiseRules::applyDamage(ActorId actor, PoiseKind kind, bool power,
-                                    PoiseSource source, TimeMs now)
+                                    PoiseSource source, TimeMs now, float damageMultiplier)
 {
     PoiseResult result;
     if (actor == 0 || now < 0 || kind < PoiseKind::Dagger || kind > PoiseKind::Unarmed ||
-        source < PoiseSource::Hit || source > PoiseSource::PerfectParry) {
+        source < PoiseSource::Hit || source > PoiseSource::PerfectParry ||
+        !std::isfinite(damageMultiplier) || damageMultiplier < 0.0F) {
         result.reason = PoiseRejectReason::InvalidInput;
         return result;
     }
@@ -101,6 +102,7 @@ PoiseResult PoiseRules::applyDamage(ActorId actor, PoiseKind kind, bool power,
         return result;
     }
     float damage = baseDamage(settings_, kind) * (power ? settings_.powerMultiplier : 1.0F);
+    damage *= damageMultiplier;
     if (source == PoiseSource::BlockedHit) damage *= settings_.blockedMultiplier;
     else if (source == PoiseSource::PerfectParry) damage = settings_.perfectParryDamage;
     state.poise -= damage;

@@ -31,6 +31,10 @@ struct Settings {
     // Minimum interval between block starts; repeated starts inside it do not arm a window.
     // Set to zero to allow every fresh block edge to arm.
     TimeMs parryRearmDelayMs{200};
+    // A perfect parry grants the defender a counterattack window during which their next
+    // power attack costs no stamina. The reward fires once and expires with the window.
+    bool counterattackEnabled{true};
+    TimeMs counterattackWindowMs{1500};
 };
 
 enum class RejectReason {
@@ -53,6 +57,9 @@ struct AttackResult {
     float staminaDebit{0.0F};
     bool engineOwnsCost{false};
     bool exhausted{false};
+    // True when this attack consumed a pending perfect-parry counterattack reward. The
+    // runtime refunds the engine's power-attack stamina deduction for this commit.
+    bool freeCounterattack{false};
     RejectReason reason{RejectReason::None};
 };
 
@@ -104,6 +111,14 @@ public:
     // An ordinary held block or a duplicate hit returns no restoration.
     ParryResult successfulBlock(ActorId actor, EventToken hit, float stamina,
                                 float maxStamina, TimeMs now);
+    // Arms the perfect-parry counterattack window for this actor. Returns true only when a
+    // new window is armed (not on a duplicate grant inside an already-active window).
+    bool grantCounterattack(ActorId actor, TimeMs now);
+    // True while this actor holds an unconsumed, unexpired counterattack reward.
+    bool counterattackReady(ActorId actor, TimeMs now) noexcept;
+    // True while the actor's counterattack window is open, consumed reward or
+    // not. The window closes at expiry or when settings reset actor state.
+    bool counterattackActive(ActorId actor, TimeMs now) noexcept;
 
     void resetActor(ActorId actor);
     void resetSession() noexcept;
@@ -119,6 +134,9 @@ private:
         TimeMs stageStart{0};
         float stageCost{0.0F};
         bool engineOwnsCost{false};
+        bool freeCounterattack{false};
+        bool counterattackArmed{false};
+        TimeMs counterattackUntil{0};
         EventToken highestHit{0};
         bool blocking{false};
         bool blockArmed{false};
@@ -129,6 +147,10 @@ private:
     static void validate(const Settings& settings);
     static bool updateClock(ActorState& state, TimeMs now);
     static ExhaustionState updateStamina(ActorState& state, float stamina);
+    // Re-arms a counterattack reward whose rewarded swing did not commit (superseded,
+    // rejected, cancelled, expired). Also clears the per-stage flag so a later commit
+    // cannot refund on the old swing's behalf. Expired windows are not resurrected.
+    static void rearmFreeCounterattack(ActorState& state, TimeMs now, bool spent) noexcept;
     RejectReason affordabilityFailure(float stamina, float cost) const noexcept;
     Settings settings_;
     std::unordered_map<ActorId, ActorState> actors_;

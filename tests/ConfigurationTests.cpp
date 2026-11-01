@@ -74,6 +74,8 @@ void defaultsAndCompleteConfiguration()
     check(defaults.config.parrySoundShield == "ApexCombat.esp|0x801");
     near(defaults.config.parrySoundVolume, 1.0F);
     check(defaults.config.parryVisual);
+    check(defaults.config.rules.counterattackEnabled);
+    check(defaults.config.rules.counterattackWindowMs == 1500);
 
     const auto full = parseConfiguration(R"ini(
 [General]
@@ -106,6 +108,9 @@ parrySoundWeapon=My Mod.esp|0x123
 parrySoundShield=
 parrySoundVolume=1.75
 parryVisual=0
+[CounterAttack]
+enabled=0
+windowMs=900
 [Debug]
 trace=true
 )ini");
@@ -134,8 +139,12 @@ trace=true
     check(full.config.parrySoundShield.empty());
     near(full.config.parrySoundVolume, 1.75F);
     check(!full.config.parryVisual);
+    check(!full.config.rules.counterattackEnabled);
+    check(full.config.rules.counterattackWindowMs == 900);
     Core::CombatRules validated(full.config.rules);
     check(validated.settings().perfectBlockWindowMs == 125);
+    check(!validated.settings().counterattackEnabled);
+    check(validated.settings().counterattackWindowMs == 900);
 }
 
 void poiseConfiguration()
@@ -146,6 +155,7 @@ void poiseConfiguration()
     near(defaults.config.poiseSettings.maxPoise, 100);
     near(defaults.config.poiseSettings.swordDamage, 25);
     near(defaults.config.poiseSettings.perfectParryDamage, 50);
+    near(defaults.config.poiseSettings.counterattackPoiseMultiplier, 1.25F);
     check(defaults.config.poiseSettings.recoveryDelayMs == 3000);
     check(defaults.config.poiseSettings.breakRecoveryMs == 1500);
 
@@ -161,6 +171,7 @@ twoHandedDamage=60
 unarmedDamage=10
 powerMultiplier=2.5
 blockedMultiplier=0.25
+counterattackPoiseMultiplier=2.0
 perfectParryDamage=80
 recoveryDelaySeconds=5
 recoveryPerSecond=50
@@ -179,6 +190,7 @@ hud=0
     near(full.config.poiseSettings.unarmedDamage, 10);
     near(full.config.poiseSettings.powerMultiplier, 2.5F);
     near(full.config.poiseSettings.blockedMultiplier, 0.25F);
+    near(full.config.poiseSettings.counterattackPoiseMultiplier, 2.0F);
     near(full.config.poiseSettings.perfectParryDamage, 80);
     check(full.config.poiseSettings.recoveryDelayMs == 5000);
     check(full.config.poiseSettings.breakRecoveryMs == 2000);
@@ -197,6 +209,7 @@ twoHandedDamage=10000
 unarmedDamage=10000
 powerMultiplier=100
 blockedMultiplier=10
+counterattackPoiseMultiplier=100
 perfectParryDamage=10000
 recoveryDelaySeconds=60
 recoveryPerSecond=100000
@@ -208,6 +221,7 @@ breakRecoverySeconds=60
     check(limits.config.poiseSettings.breakRecoveryMs == 60000);
     Core::PoiseRules validatedLimits(limits.config.poiseSettings);
     check(validatedLimits.settings().blockedMultiplier == 10);
+    check(validatedLimits.settings().counterattackPoiseMultiplier == 100);
 
     const auto invalid = parseConfiguration(R"ini(
 [Poise]
@@ -218,12 +232,13 @@ axeDamage=10001
 maceDamage=inf
 powerMultiplier=100.5
 blockedMultiplier=-0.5
+counterattackPoiseMultiplier=0.5
 perfectParryDamage=10001
 recoveryDelaySeconds=61
 recoveryPerSecond=100001
 breakRecoverySeconds=60.5
 )ini");
-    check(invalid.diagnostics.size() == 11);
+    check(invalid.diagnostics.size() == 12);
     near(invalid.config.poiseSettings.maxPoise, 100);
     near(invalid.config.poiseSettings.daggerDamage, 20);
     near(invalid.config.poiseSettings.swordDamage, 25);
@@ -231,6 +246,7 @@ breakRecoverySeconds=60.5
     near(invalid.config.poiseSettings.maceDamage, 35);
     near(invalid.config.poiseSettings.powerMultiplier, 1.5F);
     near(invalid.config.poiseSettings.blockedMultiplier, 0.5F);
+    near(invalid.config.poiseSettings.counterattackPoiseMultiplier, 1.25F);
     near(invalid.config.poiseSettings.perfectParryDamage, 50);
     check(invalid.config.poiseSettings.recoveryDelayMs == 3000);
     check(invalid.config.poiseSettings.recoveryPerSecond == 20);

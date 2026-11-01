@@ -5,7 +5,7 @@ Update it at the end of every session: mark completed work, record new
 decisions with their evidence, and rewrite "Next steps" so a fresh session
 can resume without re-deriving context.
 
-Last updated: 2026-11-01 (session: perfect-parry spark VFX shipped — stale-ESP crash + corrupted root NIFs fixed)
+Last updated: 2026-11-01 (session: counterattack re-arm fix + window poise bonus shipped and validated in game)
 
 ## Project
 
@@ -389,29 +389,70 @@ diagnostic behavior are already generic.
   - Not perfect yet (user): spark visual could be tuned further (size/
     position/optional fuller ring flare). Parked as a follow-up polish
     item — see "Open items".
+- **Counterattack window round (2026-11-01, validated in game)** —
+  perfect parry grants the defender a bounded window (default 1500 ms)
+  where the next power attack costs 0 stamina and all attacks deal
+  bonus poise damage:
+  - Free power attack: `grantCounterattack`/`counterattackReady` core
+    state, INI `[CounterAttack] enabled/windowMs`. Reward semantics are
+    **spend on commit**: any non-commit ending (supersede by engine
+    retry, rejection, cancellation, window expiry) re-arms it via the
+    `rearmFreeCounterattack` helper; expired windows are never
+    resurrected. Runtime recaptures `freePowerBaseline` and rebinds
+    `freePowerStage` on every consuming begin; `SettleFreeCounterattack`
+    is guarded by `freePowerStage != 0`; settles happen on
+    `attackrelease`, `attackstop`/`staggerstart`/`recoilstart`, and a
+    per-frame fallback in `UpdateHooks::Hook` (before the bow-drain
+    early returns). Root cause of the original "counter power attack
+    still drains stamina" bug: MCO/BFCO fires multiple begin events per
+    swing (admit → dispatch-failed retries → commit), the engine drain
+    lands after commit, and the earlier build consumed the reward on
+    the first retry begin without refunding.
+  - Poise bonus: `PoiseSettings::counterattackPoiseMultiplier`
+    (default 1.25, validated >= 1.0); `PoiseRules::applyDamage` gained
+    `float damageMultiplier = 1.0F` (applied after the power
+    multiplier, before the block reduction; the flat perfect-parry
+    counter-damage ignores it; NaN/negative rejected);
+    `CombatRules::counterattackActive` (true while the window is open,
+    even after the reward is spent); runtime `ApplyDefenderPoise`
+    passes the multiplier when the attacker's window is active.
+    INI key `poise.counterattackpoisemultiplier` (range 1..100).
+  - Tests: `counterattackRewardSurvivesRetries` +
+    `counterattackActiveTracksOpenWindow` (CoreTests),
+    `counterattackPoiseBonus` (PoiseTests), ConfigurationTests
+    defaults/full/limits/invalid extended (invalid diagnostics 11→12).
+    All green: 238 combat + 57 poise + 233 config checks, parry
+    contacts, 7 tools tests.
+  - Build/deploy: `local-cross` rebuilt (dll sha256 `9d04f192...`),
+    `tools/audit-dll.py` clean, `tools/package.py` re-packaged `dist/`
+    (zip sha256 `216e88c2...`), DLL + INI synced to
+    `/mnt/mods/Amaranth/mods/Apex Combat/SKSE/Plugins/` (hashes
+    verified).
+  - **In-game validation (user, 2026-11-01)**: trace shows the
+    counterattack power attack after a perfect parry admits at
+    `amount=0` and commits via `commit-engine-cost` with no stamina
+    drain, and window poise damage carries the bonus (e.g. NPC dagger
+    light hits `amount=18.75` = 15 × 1.25). User confirmed: "playtest
+    looks good — no stamina drain on counter power attack after a
+    perfect parry."
 
 ## Next steps (execute in order)
 
-1. Wait for user in-game validation of the bow pullback drain (commit
-   `f0ab372` build), the remaining stamina behaviors, and — only after
-   they retire their current poise mod — the poise build (`d3ebd99`),
-   then have them flip `[Poise] enabled` in the deployed INI.
-2. Deploy the fresh build to MO2 when the user decides (deploy plan
-   and rollback are documented above; preview only so far). They deploy
-   themselves.
-3. Milestone 0.2 second half (issue #6): For Honor counterattack effect
+1. Milestone 0.2 remainder (issue #6): For Honor counterattack effect
    adapters (trace the actual plugin records — FormKeys 0x5F5/0x89F/
-   0x8BD via Variable01/Variable03 per the audit doc) and decide the
-   poise HUD owner (TrueHUD API headers not vendored locally yet).
+   0x8BD via Variable01/Variable03 per the audit doc). Poise HUD owner
+   is settled: TrueHUD special resource bar shipped in `88dea79`.
+2. Consolidation roadmap follow-ups (user's 3819-mod setup, after 0.2):
+   stamina regen + stagger knobs, AI attack tokens (retire Wait Your
+   Turn + Enhanced Combat AI), per-enemy styles.
 
 ## Open items / parked
 
 - MO2 deployment apply is pending a user decision (preview-only so far).
-- Poise (milestone 0.2 first half) is code-complete but needs in-game
-  validation; `enabled=false` until the user retires their current poise
-  mod and opts in. Remaining milestone 0.2 work: For Honor counterattack
-  effect adapters and the poise HUD owner decision (TrueHUD API headers
-  not vendored locally; owner undecided by design).
+- Poise (milestone 0.2 first half) is shipped and validated in game
+  (TrueHUD bar, poise damage/break, counterattack window bonus).
+  Remaining milestone 0.2 work: For Honor counterattack effect
+  adapters.
 - Player-only vs NPC scope for bow drain: default drains both player
   and NPCs; if user wants player-only, gate with `IsPlayerRef()`.
 - Separate pullback-vs-full-draw bow drain rates: current build uses
@@ -426,5 +467,6 @@ diagnostic behavior are already generic.
   transient pullback state; if the user reports stamina draining while
   idling with a nocked bow, gate the `kBowAttached` branch behind a
   seen-draw-start latch.
-- In-game validation of the bow pullback fix still required from the
-  user after build+deploy.
+- In-game validation of the bow pullback fix was folded into the
+  2026-11-01 playtest (no drain complaints); consider it accepted
+  unless the user reports otherwise.

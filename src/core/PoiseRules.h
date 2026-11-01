@@ -20,6 +20,10 @@ struct PoiseSettings {
     float powerMultiplier{1.5F};
     // Fraction of the listed damage that passes through an ordinary held block.
     float blockedMultiplier{0.5F};
+    // Bonus applied to poise damage dealt by an attacker inside an active
+    // counterattack window (armed by a perfect parry). Ignored for the flat
+    // perfect-parry counter-damage. 1.0 disables.
+    float counterattackPoiseMultiplier{1.25F};
     // Flat damage dealt to the attacker by a perfect parry; kind is ignored.
     float perfectParryDamage{50.0F};
     // Poise regenerates at recoveryPerSecond only after this delay since the
@@ -52,8 +56,10 @@ public:
     // Validates first, then replaces settings and clears actor state.
     void setSettings(PoiseSettings settings);
 
+    // damageMultiplier scales the hit damage (multiplied after the power bonus,
+    // before the block reduction); the flat perfect-parry damage ignores it.
     PoiseResult applyDamage(ActorId actor, PoiseKind kind, bool power,
-                            PoiseSource source, TimeMs now);
+                            PoiseSource source, TimeMs now, float damageMultiplier = 1.0F);
     // Current poise with lazy regen and break recovery applied.
     float poise(ActorId actor, TimeMs now);
     bool isStaggered(ActorId actor, TimeMs now);

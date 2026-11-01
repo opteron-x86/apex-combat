@@ -318,6 +318,159 @@ void invalidInputsCannotSpendOrRecover()
     try { CombatRules invalid(bad); } catch (const std::invalid_argument&) { rejected = true; }
     check(rejected);
 }
+
+void counterattackWindowPowerOnly()
+{
+    CombatRules rules;
+    check(rules.grantCounterattack(1, 100));
+    check(rules.counterattackReady(1, 101));
+    check(rules.grantCounterattack(1, 200));  // Re-grant inside the window refreshes it.
+    check(rules.counterattackReady(1, 200 + 1499));
+    check(!rules.counterattackReady(1, 200 + 1501));  // Expired.
+
+    // Light attacks never consume the reward.
+    check(rules.grantCounterattack(2, 100));
+    auto light = rules.beginAttack(2, 1, AttackKind::LightOneHanded, 100, 110);
+    check(light.accepted && !light.freeCounterattack);
+    near(light.nominalCost, 20);
+    check(rules.counterattackReady(2, 111));
+    check(rules.commitAttack(2, 1, 80, 112).accepted);
+    check(rules.counterattackReady(2, 113));
+
+    // Power attack inside the window is free, once.
+    auto power = rules.beginAttack(2, 2, AttackKind::Power, 80, 120, 30);
+    check(power.accepted && power.freeCounterattack && power.engineOwnsCost);
+    near(power.nominalCost, 0);
+    auto duplicate = rules.beginAttack(2, 2, AttackKind::Power, 80, 121, 30);
+    check(duplicate.accepted && duplicate.duplicate && duplicate.freeCounterattack);
+    check(!rules.counterattackReady(2, 122));  // Consumed at begin, not at commit.
+    auto commit = rules.commitAttack(2, 2, 80, 123);
+    check(commit.accepted && commit.freeCounterattack && commit.engineOwnsCost);
+    near(commit.staminaDebit, 0);  // Runtime refunds the engine's deduction.
+
+    // The next power attack pays normally.
+    auto next = rules.beginAttack(2, 3, AttackKind::Power, 80, 130, 30);
+    check(next.accepted && !next.freeCounterattack && next.engineOwnsCost);
+    near(next.nominalCost, 30);
+}
+
+void counterattackWindowExpiryAndDenial()
+{
+    CombatRules rules;
+    check(rules.grantCounterattack(1, 0));
+    check(!rules.counterattackReady(1, 1501));  // Window elapsed without a power attack.
+
+    // Expiry consumed the window; the following power attack pays full price.
+    check(rules.grantCounterattack(1, 1600));
+    auto late = rules.beginAttack(1, 1, AttackKind::Power, 100, 1600 + 1501, 40);
+    check(late.accepted && !late.freeCounterattack);
+    near(late.nominalCost, 40);
+
+    // A power attack admitted at the boundary is still free.
+    check(rules.grantCounterattack(1, 3200));
+    auto boundary = rules.beginAttack(1, 2, AttackKind::Power, 100, 3200 + 1500, 40);
+    check(boundary.accepted && boundary.freeCounterattack);
+
+    // A rejected power attack re-arms the reward; the retry consumes it again.
+    check(rules.grantCounterattack(2, 0));
+    auto denied = rules.beginAttack(2, 1, AttackKind::Power, 0, 10, 40);
+    check(!denied.accepted && denied.reason == RejectReason::NoStamina && !denied.freeCounterattack);
+    check(rules.counterattackReady(2, 11));
+    auto retry = rules.beginAttack(2, 2, AttackKind::Power, 50, 12, 40);
+    check(retry.accepted && retry.freeCounterattack);  // Reward re-armed by the denial.
+
+    // Disabled: grants are refused and no reward is ever armed.
+    Settings settings;
+    settings.counterattackEnabled = false;
+    CombatRules off(settings);
+    check(!off.grantCounterattack(1, 0));
+    auto normal = off.beginAttack(1, 1, AttackKind::Power, 100, 1, 40);
+    check(normal.accepted && !normal.freeCounterattack);
+    near(normal.nominalCost, 40);
+}
+
+// The reward is spent on commit, not on begin: any path that ends a rewarded swing
+// without committing (supersede, cancellation, rejection, expiry) re-arms it, so
+// engine retries and follow-up power attacks still consume it.
+void counterattackRewardSurvivesRetries()
+{
+    // MCO-style triple begin: each retry supersedes the uncommitted previous stage
+    // and re-arms the reward, so the final begin still carries it to the commit.
+    CombatRules rules;
+    check(rules.grantCounterattack(1, 0));
+    auto first = rules.beginAttack(1, 1, AttackKind::Power, 100, 10, 40);
+    check(first.accepted && first.freeCounterattack);
+    auto mid = rules.beginAttack(1, 2, AttackKind::Power, 100, 20, 40);
+    check(mid.accepted && mid.freeCounterattack);
+    auto last = rules.beginAttack(1, 3, AttackKind::Power, 100, 30, 40);
+    check(last.accepted && last.freeCounterattack);
+    check(!rules.counterattackReady(1, 31));  // Consumed by the pending final stage.
+    auto commit = rules.commitAttack(1, 3, 100, 40);
+    check(commit.accepted && commit.freeCounterattack && commit.engineOwnsCost);
+    near(commit.staminaDebit, 0);
+    check(!rules.counterattackReady(1, 41));  // Spent on the committed swing.
+
+    // A light stage superseding a rewarded power stage re-arms the reward; a later
+    // power attack consumes it again.
+    check(rules.grantCounterattack(2, 0));
+    auto power = rules.beginAttack(2, 1, AttackKind::Power, 100, 10, 40);
+    check(power.accepted && power.freeCounterattack);
+    auto switched = rules.beginAttack(2, 2, AttackKind::LightOneHanded, 100, 20);
+    check(switched.accepted && !switched.freeCounterattack);
+    check(rules.counterattackReady(2, 21));
+    auto again = rules.beginAttack(2, 3, AttackKind::Power, 100, 30, 40);
+    check(again.accepted && again.freeCounterattack);
+    check(rules.commitAttack(2, 3, 100, 40).freeCounterattack);
+
+    // A cancelled rewarded swing re-arms the reward, and a light commit after the
+    // cancellation cannot spend a stale reward.
+    check(rules.grantCounterattack(3, 0));
+    auto swing = rules.beginAttack(3, 1, AttackKind::Power, 100, 10, 40);
+    check(swing.accepted && swing.freeCounterattack);
+    check(rules.cancelAttack(3, 1, 20));
+    check(rules.counterattackReady(3, 21));
+    auto lightSwing = rules.beginAttack(3, 2, AttackKind::LightOneHanded, 100, 30);
+    check(lightSwing.accepted && !lightSwing.freeCounterattack);
+    auto lightCommit = rules.commitAttack(3, 2, 100, 40);
+    check(lightCommit.accepted && !lightCommit.freeCounterattack);
+    auto next = rules.beginAttack(3, 3, AttackKind::Power, 100, 50, 40);
+    check(next.accepted && next.freeCounterattack);
+
+    // An expired window is not resurrected by a retry.
+    check(rules.grantCounterattack(4, 0));
+    auto lateFirst = rules.beginAttack(4, 1, AttackKind::Power, 100, 0, 40);
+    check(lateFirst.accepted && lateFirst.freeCounterattack);
+    auto lateRetry = rules.beginAttack(4, 2, AttackKind::Power, 100, 1501, 40);
+    check(lateRetry.accepted && !lateRetry.freeCounterattack);
+    check(!rules.counterattackReady(4, 1502));
+}
+
+// counterattackActive tracks the open window itself: it stays true after the
+// reward is spent (so the poise bonus still applies) and turns false at expiry.
+void counterattackActiveTracksOpenWindow()
+{
+    CombatRules rules;
+    check(!rules.counterattackActive(1, 0));  // Unknown actor.
+    check(rules.grantCounterattack(1, 0));
+    check(rules.counterattackActive(1, 0));
+    check(rules.counterattackActive(1, 1500));
+    check(!rules.counterattackActive(1, 1501));  // Window closed.
+
+    // After consumption the window stays active for the remaining time.
+    check(rules.grantCounterattack(2, 0));
+    auto swing = rules.beginAttack(2, 1, AttackKind::Power, 100, 10, 40);
+    check(swing.accepted && swing.freeCounterattack);
+    rules.commitAttack(2, 1, 100, 20);
+    check(!rules.counterattackReady(2, 21));  // Spent.
+    check(rules.counterattackActive(2, 21));  // Window still open.
+    check(!rules.counterattackActive(2, 1501));
+
+    // Refresh inside the window re-opens the reward and the active span.
+    check(rules.grantCounterattack(3, 0));
+    check(rules.grantCounterattack(3, 200));
+    check(rules.counterattackActive(3, 200 + 1500));
+    check(!rules.counterattackActive(3, 200 + 1501));
+}
 }  // namespace
 
 int main()
@@ -333,5 +486,9 @@ int main()
     clockRegressionAndReset();
     perWeaponCostsAndDualWield();
     invalidInputsCannotSpendOrRecover();
+    counterattackWindowPowerOnly();
+    counterattackWindowExpiryAndDenial();
+    counterattackRewardSurvivesRetries();
+    counterattackActiveTracksOpenWindow();
     std::cout << "Combat rules: " << checks << " checks passed\n";
 }

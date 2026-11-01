@@ -70,7 +70,7 @@ bool boolean(std::string_view text, bool& target)
 bool knownSection(std::string_view section)
 {
     return section == "general" || section == "stamina" || section == "perfectblock" ||
-           section == "poise" || section == "debug";
+           section == "counterattack" || section == "poise" || section == "debug";
 }
 
 bool knownKey(std::string_view key)
@@ -89,11 +89,13 @@ bool knownKey(std::string_view key)
            key == "perfectblock.rearmdelayms" || key == "perfectblock.blockangledegrees" ||
            key == "perfectblock.parrysoundweapon" || key == "perfectblock.parrysoundshield" ||
            key == "perfectblock.parrysoundvolume" || key == "perfectblock.parryvisual" ||
+           key == "counterattack.enabled" || key == "counterattack.windowms" ||
            key == "poise.enabled" || key == "poise.maxpoise" ||
            key == "poise.daggerdamage" || key == "poise.sworddamage" ||
            key == "poise.axedamage" || key == "poise.macedamage" ||
            key == "poise.twohandeddamage" || key == "poise.unarmeddamage" ||
            key == "poise.powermultiplier" || key == "poise.blockedmultiplier" ||
+           key == "poise.counterattackpoisemultiplier" ||
            key == "poise.perfectparrydamage" || key == "poise.recoverydelayseconds" ||
            key == "poise.recoverypersecond" || key == "poise.breakrecoveryseconds" ||
            key == "poise.hud" ||
@@ -143,6 +145,9 @@ bool apply(Configuration& config, const std::string& key, std::string_view value
     }
     if (key == "perfectblock.parrysoundvolume")
         return number(value, 0.0F, 2.0F, config.parrySoundVolume);
+    if (key == "counterattack.enabled") return boolean(value, rules.counterattackEnabled);
+    if (key == "counterattack.windowms")
+        return number(value, Core::TimeMs{1}, Core::TimeMs{10000}, rules.counterattackWindowMs);
     if (key == "perfectblock.parryvisual") return boolean(value, config.parryVisual);
     if (key == "poise.enabled") return boolean(value, config.poise);
     if (key == "poise.hud") return boolean(value, config.poiseHud);
@@ -155,6 +160,8 @@ bool apply(Configuration& config, const std::string& key, std::string_view value
     if (key == "poise.unarmeddamage") return number(value, 0.0F, 10000.0F, config.poiseSettings.unarmedDamage);
     if (key == "poise.powermultiplier") return number(value, 0.0F, 100.0F, config.poiseSettings.powerMultiplier);
     if (key == "poise.blockedmultiplier") return number(value, 0.0F, 10.0F, config.poiseSettings.blockedMultiplier);
+    if (key == "poise.counterattackpoisemultiplier")
+        return number(value, 1.0F, 100.0F, config.poiseSettings.counterattackPoiseMultiplier);
     if (key == "poise.perfectparrydamage")
         return number(value, 0.0F, 10000.0F, config.poiseSettings.perfectParryDamage);
     if (key == "poise.recoverypersecond")

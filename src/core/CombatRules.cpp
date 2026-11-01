@@ -34,7 +34,7 @@ void CombatRules::validate(const Settings& settings)
         !validCost(settings.unarmedCost) || !validCost(settings.daggerCost) ||
         !validCost(settings.axeCost) || !validCost(settings.maceCost) ||
         !std::isfinite(settings.dualWieldMultiplier) || settings.dualWieldMultiplier < 1.0F ||
-        !validCost(settings.perfectBlockRestore) ||
+        !validCost(settings.perfectBlockRestore) || settings.counterattackWindowMs < 0 ||
         settings.attackCommitTimeoutMs <= 0 || settings.perfectBlockWindowMs <= 0 ||
         settings.parryRearmDelayMs < 0 ||
         (settings.affordability != Affordability::PositiveStamina &&
@@ -56,6 +56,7 @@ bool CombatRules::updateClock(ActorState& state, TimeMs now)
     state.hasTime = true;
     state.lastTime = now;
     if (regressed) {
+        rearmFreeCounterattack(state, now, state.stagePending && state.freeCounterattack);
         state.stagePending = false;
         state.blockArmed = false;
         state.hasBlockStart = true;
@@ -69,6 +70,14 @@ ExhaustionState CombatRules::updateStamina(ActorState& state, float stamina)
     const bool before = state.exhausted;
     state.exhausted = stamina <= 0.0F;
     return {state.exhausted, !before && state.exhausted, before && !state.exhausted};
+}
+
+void CombatRules::rearmFreeCounterattack(ActorState& state, TimeMs now, bool spent) noexcept
+{
+    if (spent && now <= state.counterattackUntil) {
+        state.counterattackArmed = true;
+    }
+    state.freeCounterattack = false;
 }
 
 RejectReason CombatRules::affordabilityFailure(float stamina, float cost) const noexcept
@@ -128,12 +137,14 @@ AttackResult CombatRules::beginAttack(ActorId actor, EventToken stage, AttackKin
         result.duplicate = true;
         if (stage == state.highestStage && state.stagePending) {
             if (!within(now, state.stageStart, settings_.attackCommitTimeoutMs)) {
+                rearmFreeCounterattack(state, now, state.freeCounterattack);
                 state.stagePending = false;
                 result.reason = RejectReason::StageExpired;
             } else {
                 result.accepted = true;
                 result.nominalCost = state.stageCost;
                 result.engineOwnsCost = state.engineOwnsCost;
+                result.freeCounterattack = state.freeCounterattack;
             }
         } else {
             result.reason = RejectReason::DuplicateToken;
@@ -141,19 +152,39 @@ AttackResult CombatRules::beginAttack(ActorId actor, EventToken stage, AttackKin
         return result;
     }
 
-    // A new stage supersedes an uncommitted request. There is no reservation to refund.
+    // A new stage supersedes an uncommitted request. There is no reservation to refund,
+    // but an uncommitted counterattack reward is re-armed first so a retry of the same
+    // swing consumes it again.
+    rearmFreeCounterattack(state, now, state.stagePending && state.freeCounterattack);
     state.highestStage = stage;
     state.stagePending = false;
+
+    // Consume a pending perfect-parry counterattack on the next power attack. Only a power
+    // attack spends the reward; light attacks leave it armed until the window expires. The
+    // reward is consumed here, before affordability, so a free power attack always admits.
+    bool freeCounterattack = false;
+    if (kind == AttackKind::Power && settings_.counterattackEnabled && state.counterattackArmed) {
+        if (now <= state.counterattackUntil) {
+            freeCounterattack = true;
+            cost = 0.0F;
+        }
+        state.counterattackArmed = false;
+    }
+
     result.nominalCost = cost;
     result.engineOwnsCost = kind == AttackKind::Power && !settings_.chargePowerAttacks;
+    result.freeCounterattack = freeCounterattack;
     result.reason = affordabilityFailure(stamina, cost);
     if (result.reason != RejectReason::None) {
+        rearmFreeCounterattack(state, now, freeCounterattack);
+        result.freeCounterattack = false;
         return result;
     }
     state.stagePending = true;
     state.stageStart = now;
     state.stageCost = cost;
     state.engineOwnsCost = result.engineOwnsCost;
+    state.freeCounterattack = freeCounterattack;
     result.accepted = true;
     return result;
 }
@@ -185,17 +216,21 @@ AttackResult CombatRules::commitAttack(ActorId actor, EventToken stage,
     state.stagePending = false;
     result.nominalCost = state.stageCost;
     result.engineOwnsCost = state.engineOwnsCost;
+    result.freeCounterattack = state.freeCounterattack;
     if (!within(now, state.stageStart, settings_.attackCommitTimeoutMs)) {
         result.reason = RejectReason::StageExpired;
+        rearmFreeCounterattack(state, now, state.freeCounterattack);
         return result;
     }
     result.reason = affordabilityFailure(stamina, state.stageCost);
     if (result.reason != RejectReason::None) {
+        rearmFreeCounterattack(state, now, state.freeCounterattack);
         return result;
     }
     result.accepted = true;
     result.staminaDebit = state.engineOwnsCost ? 0.0F : std::min(stamina, state.stageCost);
     result.exhausted = updateStamina(state, stamina - result.staminaDebit).exhausted;
+    state.freeCounterattack = false;
     return result;
 }
 
@@ -210,6 +245,7 @@ bool CombatRules::cancelAttack(ActorId actor, EventToken stage, TimeMs now)
         return false;
     }
     state.stagePending = false;
+    rearmFreeCounterattack(state, now, state.freeCounterattack);
     return true;
 }
 
@@ -287,6 +323,38 @@ ParryResult CombatRules::successfulBlock(ActorId actor, EventToken hit, float st
     result.staminaRestore = std::min(settings_.perfectBlockRestore, maxStamina - current);
     result.exhausted = updateStamina(state, stamina + result.staminaRestore).exhausted;
     return result;
+}
+
+bool CombatRules::grantCounterattack(ActorId actor, TimeMs now)
+{
+    if (actor == 0 || !settings_.counterattackEnabled || settings_.counterattackWindowMs <= 0) {
+        return false;
+    }
+    auto& state = actors_[actor];
+    if (!updateClock(state, now)) {
+        return false;
+    }
+    // Re-granting inside an already-active window refreshes it rather than stacking.
+    state.counterattackArmed = true;
+    state.counterattackUntil = now + settings_.counterattackWindowMs;
+    return true;
+}
+
+bool CombatRules::counterattackReady(ActorId actor, TimeMs now) noexcept
+{
+    const auto found = actors_.find(actor);
+    if (found == actors_.end()) {
+        return false;
+    }
+    const auto& state = found->second;
+    return state.counterattackArmed && now <= state.counterattackUntil;
+}
+
+bool CombatRules::counterattackActive(ActorId actor, TimeMs now) noexcept
+{
+    const auto found = actors_.find(actor);
+    return found != actors_.end() && found->second.counterattackUntil != 0 &&
+           now <= found->second.counterattackUntil;
 }
 
 void CombatRules::resetActor(ActorId actor) { actors_.erase(actor); }
