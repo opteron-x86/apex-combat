@@ -11,9 +11,9 @@ A CommonLibSSE-NG native plugin for Skyrim Special Edition / Anniversary Edition
 - **IDLE gates.** Adds a stamina condition to vanilla and custom attack IDLE roots so directly dispatched attacks cannot bypass admission.
 - **Poise.** Each actor carries a per-class poise pool: light hits subtract class-damage, power attacks scale it, ordinary blocks pass only the blocked fraction, and a perfect parry deals flat damage to the attacker. A break staggers the actor and ignores further poise damage until the break recovery elapses; poise then refills and regenerates after the configured delay.
 
-Poise is **off by default** while it is validated. Enable it only after removing or disabling your previous poise mod (for example Chocolate Poise) — running both at once double-staggers. Perfect blocking and poise both require the [Precision](https://www.nexusmods.com/skyrimspecialedition/mods/72305) collision framework. Without it, stamina features remain available and perfect blocking stays off.
+Poise is **enabled in the shipped configuration**. If you still run an older poise mod (for example Chocolate Poise), remove it or set `poise.enabled = false` — running both at once double-staggers. When [TrueHUD](https://www.nexusmods.com/skyrimspecialedition/mods/62775) is present, the pool is published through its special resource bar and flashes on damage and breaks. A perfect parry also plays a configurable feedback sound (vanilla blade/shield block impacts by default; For Honor Reforged users can repoint at its parry clangs via the INI) and fires the engine's own metal-spark impact flash at the blocking weapon or shield (toggle via `parryVisual`). Perfect blocking and poise both require the [Precision](https://www.nexusmods.com/skyrimspecialedition/mods/72305) collision framework. Without it, stamina features remain available and perfect blocking stays off.
 
-Not yet implemented: For Honor effect adapters, projectile/spell eligibility, sprint/jump/dodge attack costs, and a poise HUD (one bar owner is still undecided).
+Not yet implemented: For Honor counterattack effect adapters, projectile/spell eligibility, and sprint/jump/dodge attack costs.
 
 ## Installation
 
@@ -51,7 +51,11 @@ All options live in `<game>/Data/SKSE/Plugins/ApexCombat.ini`. Restart the game 
 | PerfectBlock | `restore` | `25` | Stamina restored by one perfect block, capped by the missing amount. |
 | PerfectBlock | `rearmDelayMs` | `200` | Minimum interval between fresh block starts; `0` disables it. |
 | PerfectBlock | `blockAngleDegrees` | `120` | Total frontal blocking cone. |
-| Poise | `enabled` | `false` | Master switch; enable only after retiring the previous poise mod. |
+| PerfectBlock | `parrySoundWeapon` / `parrySoundShield` | vanilla block-impact SNDRs | Perfect-parry feedback sounds as `Plugin.esp|0xFormID`; empty disables. |
+| PerfectBlock | `parrySoundVolume` | `1.0` | Scales the parry clang volume, `0`–`2` where `1` is the descriptor level. |
+| PerfectBlock | `parryVisual` | `true` | Attach the vanilla metal-spark impact root at the blocking weapon/shield so the engine fires its own spark flash. |
+| Poise | `enabled` | `true` (shipped INI) | Master switch; the code default stays off so a missing config cannot double-stagger alongside an older poise mod. |
+| Poise | `hud` | `true` | Publish the poise pool through TrueHUD's special resource bar. |
 | Poise | `maxPoise` | `100` | Poise pool size per actor. |
 | Poise | `daggerDamage` / `swordDamage` / `axeDamage` / `maceDamage` / `twoHandedDamage` / `unarmedDamage` | `20/25/30/35/40/15` | Poise damage per light hit by weapon class. |
 | Poise | `powerMultiplier` | `1.5` | Scales poise damage of power attacks. |

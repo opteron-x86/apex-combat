@@ -70,6 +70,10 @@ void defaultsAndCompleteConfiguration()
     check(defaults.config.rules.affordability == Core::Affordability::PositiveStamina);
     check(defaults.config.rules.perfectBlockWindowMs == 150);
     check(defaults.config.rules.parryRearmDelayMs == 200);
+    check(defaults.config.parrySoundWeapon == "ApexCombat.esp|0x800");
+    check(defaults.config.parrySoundShield == "ApexCombat.esp|0x801");
+    near(defaults.config.parrySoundVolume, 1.0F);
+    check(defaults.config.parryVisual);
 
     const auto full = parseConfiguration(R"ini(
 [General]
@@ -98,6 +102,10 @@ windowMs=125
 restore=42.5
 rearmDelayMs=0
 blockAngleDegrees=90
+parrySoundWeapon=My Mod.esp|0x123
+parrySoundShield=
+parrySoundVolume=1.75
+parryVisual=0
 [Debug]
 trace=true
 )ini");
@@ -122,6 +130,10 @@ trace=true
     check(full.config.rules.attackCommitTimeoutMs == 1500);
     check(full.config.rules.perfectBlockWindowMs == 125);
     check(full.config.rules.parryRearmDelayMs == 0);
+    check(full.config.parrySoundWeapon == "My Mod.esp|0x123");
+    check(full.config.parrySoundShield.empty());
+    near(full.config.parrySoundVolume, 1.75F);
+    check(!full.config.parryVisual);
     Core::CombatRules validated(full.config.rules);
     check(validated.settings().perfectBlockWindowMs == 125);
 }
@@ -130,6 +142,7 @@ void poiseConfiguration()
 {
     const auto defaults = parseConfiguration("");
     check(!defaults.config.poise);
+    check(defaults.config.poiseHud);
     near(defaults.config.poiseSettings.maxPoise, 100);
     near(defaults.config.poiseSettings.swordDamage, 25);
     near(defaults.config.poiseSettings.perfectParryDamage, 50);
@@ -152,9 +165,11 @@ perfectParryDamage=80
 recoveryDelaySeconds=5
 recoveryPerSecond=50
 breakRecoverySeconds=2
+hud=0
 )ini");
     check(full.diagnostics.empty());
     check(full.config.poise);
+    check(!full.config.poiseHud);
     near(full.config.poiseSettings.maxPoise, 40);
     near(full.config.poiseSettings.daggerDamage, 5);
     near(full.config.poiseSettings.swordDamage, 30);
@@ -283,8 +298,12 @@ windowMs=1000
 restore=10000
 rearmDelayMs=10000
 blockAngleDegrees=360
+parrySoundVolume=2
+parryVisual=1
 )ini");
     check(limits.diagnostics.empty());
+    near(limits.config.parrySoundVolume, 2.0F);
+    check(limits.config.parryVisual);
     near(limits.config.rules.lightOneHandedCost, 0);
     near(limits.config.rules.lightTwoHandedCost, 10000);
     near(limits.config.rules.daggerCost, 0);
@@ -315,8 +334,10 @@ affordability=anything
 restore=-1
 rearmDelayMs=-1
 blockAngleDegrees=0
+parrySoundVolume=2.01
+parryVisual=broken
 )ini");
-    check(invalid.diagnostics.size() == 13);
+    check(invalid.diagnostics.size() == 15);
     near(invalid.config.regenDelaySeconds, 0.5F);
     near(invalid.config.rules.daggerCost, 10);
     near(invalid.config.rules.axeCost, 25);
@@ -330,6 +351,8 @@ blockAngleDegrees=0
     check(invalid.config.rules.attackCommitTimeoutMs == 1000);
     check(invalid.config.rules.parryRearmDelayMs == 200);
     check(invalid.config.rules.affordability == Core::Affordability::PositiveStamina);
+    near(invalid.config.parrySoundVolume, 1.0F);
+    check(!invalid.config.parryVisual);
 }
 
 void invalidBooleansDoNotEnableFeatures()
@@ -423,10 +446,15 @@ int main(int argc, char** argv)
         near(shipped.config.rules.dualWieldMultiplier, 1.6F);
         near(shipped.config.dodgeRegenDelaySeconds, 0.5F);
         near(shipped.config.bowDrawDrainPerSecond, 5.0F);
-        check(!shipped.config.poise);
+        check(shipped.config.poise);
+        check(shipped.config.poiseHud);
         near(shipped.config.poiseSettings.maxPoise, 100);
         near(shipped.config.poiseSettings.swordDamage, 25);
         near(shipped.config.poiseSettings.perfectParryDamage, 50);
+        check(shipped.config.parrySoundWeapon == "ApexCombat.esp|0x800");
+        check(shipped.config.parrySoundShield == "ApexCombat.esp|0x801");
+        near(shipped.config.parrySoundVolume, 1.0F);
+        check(shipped.config.parryVisual);
         check(shipped.config.poiseSettings.recoveryDelayMs == 3000);
         check(shipped.config.poiseSettings.breakRecoveryMs == 1500);
         near(shipped.config.poiseSettings.recoveryPerSecond, 20);

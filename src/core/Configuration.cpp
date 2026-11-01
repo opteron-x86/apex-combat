@@ -87,6 +87,8 @@ bool knownKey(std::string_view key)
            key == "perfectblock.enabled" || key == "perfectblock.npcenabled" ||
            key == "perfectblock.windowms" || key == "perfectblock.restore" ||
            key == "perfectblock.rearmdelayms" || key == "perfectblock.blockangledegrees" ||
+           key == "perfectblock.parrysoundweapon" || key == "perfectblock.parrysoundshield" ||
+           key == "perfectblock.parrysoundvolume" || key == "perfectblock.parryvisual" ||
            key == "poise.enabled" || key == "poise.maxpoise" ||
            key == "poise.daggerdamage" || key == "poise.sworddamage" ||
            key == "poise.axedamage" || key == "poise.macedamage" ||
@@ -94,6 +96,7 @@ bool knownKey(std::string_view key)
            key == "poise.powermultiplier" || key == "poise.blockedmultiplier" ||
            key == "poise.perfectparrydamage" || key == "poise.recoverydelayseconds" ||
            key == "poise.recoverypersecond" || key == "poise.breakrecoveryseconds" ||
+           key == "poise.hud" ||
            key == "debug.trace";
 }
 
@@ -130,7 +133,19 @@ bool apply(Configuration& config, const std::string& key, std::string_view value
     if (key == "perfectblock.rearmdelayms")
         return number(value, Core::TimeMs{0}, Core::TimeMs{10000}, rules.parryRearmDelayMs);
     if (key == "perfectblock.blockangledegrees") return number(value, 1.0F, 360.0F, config.blockAngleDegrees);
+    if (key == "perfectblock.parrysoundweapon") {
+        config.parrySoundWeapon = value;
+        return true;
+    }
+    if (key == "perfectblock.parrysoundshield") {
+        config.parrySoundShield = value;
+        return true;
+    }
+    if (key == "perfectblock.parrysoundvolume")
+        return number(value, 0.0F, 2.0F, config.parrySoundVolume);
+    if (key == "perfectblock.parryvisual") return boolean(value, config.parryVisual);
     if (key == "poise.enabled") return boolean(value, config.poise);
+    if (key == "poise.hud") return boolean(value, config.poiseHud);
     if (key == "poise.maxpoise") return number(value, 1.0F, 100000.0F, config.poiseSettings.maxPoise);
     if (key == "poise.daggerdamage") return number(value, 0.0F, 10000.0F, config.poiseSettings.daggerDamage);
     if (key == "poise.sworddamage") return number(value, 0.0F, 10000.0F, config.poiseSettings.swordDamage);

@@ -8,6 +8,7 @@
 #include "core/ParryContacts.h"
 #include "core/PoiseRules.h"
 #include "precision/PrecisionAPI.h"
+#include "truehud/TrueHUDAPI.h"
 
 #include <algorithm>
 #include <atomic>
@@ -30,6 +31,12 @@ std::recursive_mutex stateMutex;
 std::atomic_bool active{false};
 bool initialized{false};
 bool precisionReady{false};
+TRUEHUD_API::IVTrueHUD1* trueHud{nullptr};
+bool trueHudReady{false};
+RE::BGSSoundDescriptorForm* parrySoundWeaponDesc{nullptr};
+RE::BGSSoundDescriptorForm* parrySoundShieldDesc{nullptr};
+float parrySoundVolume{1.0f};
+bool parryVisual{true};
 
 struct ActorState {
     EventToken stage{0};
@@ -376,17 +383,172 @@ Core::PoiseKind PoiseKindFromWeapon(RE::Actor* attacker) {
     }
 }
 
-// Locks stateMutex itself (recursive). Returns true when this contact broke
-// the defender's poise; the stagger notification must be sent after lock release.
-bool ApplyDefenderPoise(RE::Actor* attacker, RE::Actor* defender, bool blocked, TimeMs now) {
-    if (!config.poise) return false;
+// Publishes the poise pool through TrueHUD's special resource bar. The
+// registered callbacks can run on the UI thread, so every read takes
+// stateMutex (recursive) before touching the rules.
+float PoiseResource(RE::Actor* actor, bool maximum) {
+    if (!actor || !config.poise) return maximum ? poiseRules.settings().maxPoise : 0.0F;
+    std::scoped_lock lock(stateMutex);
+    if (maximum) return poiseRules.settings().maxPoise;
+    return poiseRules.poise(actor->GetFormID(), Now());
+}
+
+void FlashSpecialBar(RE::Actor* actor, bool longFlash) {
+    if (trueHudReady && actor) trueHud->FlashActorSpecialBar(SKSE::GetPluginHandle(), actor->GetHandle(), longFlash);
+}
+
+void FlashPoiseResult(RE::Actor* actor, const Core::PoiseResult& result) {
+    if (result.broke || result.applied) FlashSpecialBar(actor, result.broke);
+}
+
+// Claims TrueHUD's special resource bar for the poise pool. Fails without
+// side effects when TrueHUD is absent or another mod already owns the bars.
+bool ConnectTrueHud() {
+    auto* api = static_cast<TRUEHUD_API::IVTrueHUD1*>(
+        TRUEHUD_API::RequestPluginAPI(TRUEHUD_API::InterfaceVersion::V1));
+    if (!api) { SKSE::log::warn("Poise HUD enabled but the TrueHUD API is unavailable."); return false; }
+    trueHud = api;
+    const auto control = api->RequestSpecialResourceBarsControl(SKSE::GetPluginHandle());
+    if (control != TRUEHUD_API::APIResult::OK) {
+        SKSE::log::warn("Poise HUD could not take special bar control (result {}). "
+            "Another poise mod may own the bars.", static_cast<int>(control));
+        return false;
+    }
+    trueHudReady = api->RegisterSpecialResourceFunctions(SKSE::GetPluginHandle(),
+        [](RE::Actor* actor) { return PoiseResource(actor, false); },
+        [](RE::Actor* actor) { return PoiseResource(actor, true); },
+        true, true) == TRUEHUD_API::APIResult::OK;
+    if (!trueHudReady) SKSE::log::warn("Poise HUD special bar registration failed.");
+    return trueHudReady;
+}
+
+// Resolves a "Plugin.esp|0xFormID" spec to a sound descriptor. Empty specs
+// disable feedback silently; unresolvable specs warn once and return null.
+RE::BGSSoundDescriptorForm* ResolveConfiguredSound(std::string_view spec, std::string_view label) {
+    if (spec.empty()) return nullptr;
+    const auto pipe = spec.find('|');
+    if (pipe == std::string_view::npos || pipe == 0 || pipe + 1 >= spec.size()) {
+        SKSE::log::warn("Invalid {} sound spec '{}'; expected Plugin.esp|0xFormID.", label, spec);
+        return nullptr;
+    }
+    const auto plugin = spec.substr(0, pipe);
+    const auto idText = spec.substr(pipe + 1);
+    unsigned long raw = 0;
+    try {
+        raw = std::stoul(std::string(idText), nullptr, 16);
+    } catch (...) {
+        SKSE::log::warn("Invalid {} sound spec '{}'; FormID is not hex.", label, spec);
+        return nullptr;
+    }
+    if (raw > 0xFFFFFF) {
+        SKSE::log::warn("Invalid {} sound spec '{}'; FormID exceeds 0xFFFFFF.", label, spec);
+        return nullptr;
+    }
+    auto* data = RE::TESDataHandler::GetSingleton();
+    auto* form = data ? data->LookupForm(static_cast<RE::FormID>(raw), plugin) : nullptr;
+    auto* descriptor = form ? form->As<RE::BGSSoundDescriptorForm>() : nullptr;
+    if (!descriptor) {
+        SKSE::log::warn("{} sound '{}' did not resolve to a sound record.", label, spec);
+        return nullptr;
+    }
+    return descriptor;
+}
+
+// Maps the defender's blocking gear to its 3D attachment node, mirroring the
+// engine's biped object slots. Returns null when no usable node is loaded.
+RE::NiAVObject* BlockEffectNode(RE::Actor* defender, bool& shielded) {
+    if (!defender) return nullptr;
+    const auto& biped = defender->GetCurrentBiped();
+    if (!biped) return nullptr;
+    auto pick = [&](RE::BIPED_OBJECT slot) -> RE::NiAVObject* {
+        if (slot == RE::BIPED_OBJECTS::kNone) return nullptr;
+        auto& part = biped->objects[slot].partClone;
+        return part ? part.get() : nullptr;
+    };
+    // A shield in the left hand always owns the block.
+    if (auto* left = defender->GetEquippedObject(true); left && left->IsArmor()) {
+        shielded = true;
+        if (auto* node = pick(RE::BIPED_OBJECTS::kShield)) return node;
+    }
+    if (auto* right = defender->GetEquippedObject(false)) {
+        if (auto* weapon = right->As<RE::TESObjectWEAP>()) {
+            using WT = RE::WEAPON_TYPE;
+            RE::BIPED_OBJECT slot = RE::BIPED_OBJECTS::kNone;
+            switch (weapon->GetWeaponType()) {
+                case WT::kOneHandSword:  slot = RE::BIPED_OBJECTS::kOneHandSword;  break;
+                case WT::kOneHandAxe:   slot = RE::BIPED_OBJECTS::kOneHandAxe;   break;
+                case WT::kOneHandMace:  slot = RE::BIPED_OBJECTS::kOneHandMace;  break;
+                case WT::kOneHandDagger: slot = RE::BIPED_OBJECTS::kOneHandDagger; break;
+                case WT::kTwoHandAxe:
+                case WT::kTwoHandSword:
+                case WT::kHandToHandMelee: slot = RE::BIPED_OBJECTS::kTwoHandMelee; break;
+                default: break;
+            }
+            shielded = false;
+            if (auto* node = pick(slot)) return node;
+        }
+    }
+    // Dual-wield/spell-blade blocks land on the left weapon.
+    if (auto* left = defender->GetEquippedObject(true)) {
+        if (auto* weapon = left->As<RE::TESObjectWEAP>()) {
+            shielded = false;
+            using WT = RE::WEAPON_TYPE;
+            switch (weapon->GetWeaponType()) {
+                case WT::kOneHandSword:  if (auto* n = pick(RE::BIPED_OBJECTS::kOneHandSword)) return n;  break;
+                case WT::kOneHandAxe:   if (auto* n = pick(RE::BIPED_OBJECTS::kOneHandAxe)) return n;   break;
+                case WT::kOneHandMace:  if (auto* n = pick(RE::BIPED_OBJECTS::kOneHandMace)) return n;  break;
+                case WT::kOneHandDagger: if (auto* n = pick(RE::BIPED_OBJECTS::kOneHandDagger)) return n; break;
+                default: break;
+            }
+        }
+    }
+    return nullptr;
+}
+
+void PlayParryFeedback(RE::Actor* attacker, RE::Actor* defender) {
+    if (!defender->IsPlayerRef() && !attacker->IsPlayerRef()) return;
+    bool shielded = defender->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kShield) != nullptr;
+    auto* node = BlockEffectNode(defender, shielded);
+    const auto position = node ? node->worldBound.center : defender->GetPosition();
+
+    // Positioned 3D playback: the clang originates from the blocking weapon or
+    // shield, not the listener, so distance and occlusion behave naturally.
+    auto* descriptor = shielded ? parrySoundShieldDesc : parrySoundWeaponDesc;
+    if (descriptor) {
+        if (auto* audio = RE::BSAudioManager::GetSingleton()) {
+            RE::BSSoundHandle handle{};
+            if (audio->GetSoundHandle(handle, descriptor, 0x16)) {
+                handle.SetPosition(position);
+                handle.SetVolume(parrySoundVolume);
+                handle.Play();
+            }
+        }
+    }
+
+    if (!parryVisual || !node) return;
+    auto* cell = defender->GetParentCell();
+    if (!cell) return;
+    // Engine-driven spark: attaching the FXMetalSparkImpact01 root to the
+    // blocking weapon/shield node makes Skyrim fire its own vanilla metal-spark
+    // impact at that node, exactly like a real block. Same recipe Elden Parry
+    // uses; no custom spark/flare NIFs required.
+    const auto& rotate = node->world.rotate;
+    RE::BSTempEffectParticle::Spawn(cell, 0.0f,
+        shielded ? "ApexCombat\\impactShieldRoot.nif" : "ApexCombat\\impactWeaponRoot.nif",
+        rotate, position, 1.0f, 4U, node);
+}
+
+// Locks stateMutex itself (recursive). Returns the poise resolution; the
+// stagger notification must be sent after lock release.
+Core::PoiseResult ApplyDefenderPoise(RE::Actor* attacker, RE::Actor* defender, bool blocked, TimeMs now) {
+    if (!config.poise) return {};
     std::scoped_lock lock(stateMutex);
     const auto result = poiseRules.applyDamage(defender->GetFormID(), PoiseKindFromWeapon(attacker),
         attacker->IsPowerAttacking(), blocked ? Core::PoiseSource::BlockedHit : Core::PoiseSource::Hit,
         now);
     Trace(defender, result.broke ? "poise-break" : "poise-damage", 0, result.poiseAfter,
         static_cast<int>(result.reason));
-    return result.broke;
+    return result;
 }
 
 PRECISION_API::PreHitCallbackReturn PreHit(const PRECISION_API::PrecisionHitData& hit) {
@@ -413,13 +575,14 @@ PRECISION_API::PreHitCallbackReturn PreHit(const PRECISION_API::PrecisionHitData
     if (!config.perfectBlock || (!defender->IsPlayerRef() && !config.npcPerfectBlock) ||
         !defender->IsBlocking() || defender->IsStaggered() || Unblockable(attacker) ||
         !WithinBlockCone(defender, attacker)) {
-        const bool broke = ApplyDefenderPoise(attacker, defender, false, now);
-        if (broke) defender->NotifyAnimationGraph("staggerStart");
+        const auto poise = ApplyDefenderPoise(attacker, defender, false, now);
+        if (poise.broke) defender->NotifyAnimationGraph("staggerStart");
+        FlashPoiseResult(defender, poise);
         return output;
     }
     bool parried = false;
-    bool attackerBroke = false;
-    bool defenderBroke = false;
+    Core::PoiseResult attackerPoise;
+    Core::PoiseResult defenderPoise;
     {
         std::scoped_lock lock(stateMutex);
         auto& attackerState = State(attacker, now);
@@ -436,7 +599,7 @@ PRECISION_API::PreHitCallbackReturn PreHit(const PRECISION_API::PrecisionHitData
         ObserveExhaustion(defender, result.exhausted, now);
         if (!result.perfect) {
             // An ordinary block still chips poise at the blocked fraction.
-            defenderBroke = ApplyDefenderPoise(attacker, defender, true, now);
+            defenderPoise = ApplyDefenderPoise(attacker, defender, true, now);
         } else if (strike && !attackerState.contacts.remember(strike, defender->GetFormID())) {
             // A duplicate contact for the same strike/defender cannot refund twice.
             output.bIgnoreHit = true;
@@ -449,18 +612,20 @@ PRECISION_API::PreHitCallbackReturn PreHit(const PRECISION_API::PrecisionHitData
                 RE::ActorValue::kStamina, result.staminaRestore);
             Trace(defender, "perfect-parry", defenderState.hit, result.staminaRestore);
             if (config.poise) {
-                const auto poise = poiseRules.applyDamage(attacker->GetFormID(), PoiseKindFromWeapon(attacker),
+                attackerPoise = poiseRules.applyDamage(attacker->GetFormID(), PoiseKindFromWeapon(attacker),
                     attacker->IsPowerAttacking(), Core::PoiseSource::PerfectParry, now);
-                Trace(attacker, poise.broke ? "poise-break" : "poise-parry", defenderState.hit,
-                    poise.poiseAfter, static_cast<int>(poise.reason));
-                attackerBroke = poise.broke;
+                Trace(attacker, attackerPoise.broke ? "poise-break" : "poise-parry", defenderState.hit,
+                    attackerPoise.poiseAfter, static_cast<int>(attackerPoise.reason));
             }
         }
     }
     // Feedback is sent after releasing the rules lock: graph callbacks can re-enter.
+    if (parried) PlayParryFeedback(attacker, defender);
     defender->NotifyAnimationGraph("Apex_PerfectParry");
-    attacker->NotifyAnimationGraph(attackerBroke ? "staggerStart" : "recoilStart");
-    if (defenderBroke) defender->NotifyAnimationGraph("staggerStart");
+    attacker->NotifyAnimationGraph(attackerPoise.broke ? "staggerStart" : "recoilStart");
+    if (defenderPoise.broke) defender->NotifyAnimationGraph("staggerStart");
+    FlashPoiseResult(attacker, attackerPoise);
+    FlashPoiseResult(defender, defenderPoise);
     return output;
 }
 
@@ -541,11 +706,21 @@ bool InitializeRuntime() {
     if (auto* ui = RE::UI::GetSingleton()) ui->AddEventSink<RE::MenuOpenCloseEvent>(&lifecycle);
     auto* api = static_cast<PRECISION_API::IVPrecision1*>(PRECISION_API::RequestPluginAPI(PRECISION_API::InterfaceVersion::V1));
     if (api) precisionReady = api->AddPreHitCallback(SKSE::GetPluginHandle(), PreHit) == PRECISION_API::APIResult::OK;
+    if (config.poise && config.poiseHud) ConnectTrueHud();
+    if (config.perfectBlock) {
+        parrySoundWeaponDesc = ResolveConfiguredSound(config.parrySoundWeapon, "weapon parry");
+        parrySoundShieldDesc = ResolveConfiguredSound(config.parrySoundShield, "shield parry");
+        parrySoundVolume = config.parrySoundVolume;
+        parryVisual = config.parryVisual;
+    }
     SKSE::log::info("Capabilities: graph stamina=true; attack IDLE gates={}; Precision melee parry={}; "
-        "bow draw drain={}; poise={}; VR={}",
+        "bow draw drain={}; poise={}; TrueHUD poise bar={}; parry sfx={}; parry vfx={}; VR={}",
         config.patchAttackIdles, precisionReady, config.bowDrawDrainPerSecond, config.poise,
-        REL::Module::IsVR());
+        trueHudReady, parrySoundWeaponDesc != nullptr || parrySoundShieldDesc != nullptr,
+        parryVisual, REL::Module::IsVR());
     if (!precisionReady) SKSE::log::warn("Perfect blocking requires a compatible Precision API. Stamina features remain available.");
+    if (config.poise && config.poiseHud && !trueHudReady)
+        SKSE::log::warn("Poise is enabled but the TrueHUD poise bar is unavailable. Poise rules still apply.");
     initialized = true;
     return true;
 }

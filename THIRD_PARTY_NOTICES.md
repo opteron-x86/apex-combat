@@ -17,6 +17,10 @@ The `third_party/precision` directory contains the Precision modding API header 
 
 Precision itself is a runtime dependency of the perfect-block feature and is not redistributed in this archive.
 
+## TrueHUD API header
+
+The `third_party/truehud/TrueHUDAPI.h` file is the TrueHUD modding API header, distributed by its author for exactly this purpose ("For modders: Copy this file into your own project if you wish to use this API"). TrueHUD itself is an optional runtime dependency of the poise HUD feature and is not redistributed in this archive.
+
 ## vcpkg dependencies
 
 Built from the versions pinned in `vcpkg.json`; license texts are included per dependency:

@@ -5,7 +5,7 @@ Update it at the end of every session: mark completed work, record new
 decisions with their evidence, and rewrite "Next steps" so a fresh session
 can resume without re-deriving context.
 
-Last updated: 2026-10-31 (session: poise core shipped, opt-in and unvalidated in game)
+Last updated: 2026-11-01 (session: perfect-parry spark VFX shipped — stale-ESP crash + corrupted root NIFs fixed)
 
 ## Project
 
@@ -283,11 +283,112 @@ diagnostic behavior are already generic.
     implementation: break at `now=3` sets `staggeredUntil == 1503`
     (not 1500); regen expectation 85 moved to `now=13000` (13500
     would be 95, capped 100); invalid poise diagnostics count is 11.
-  - Validation: `tools/build.sh native-tests` 4/4 CTest suites +
-    7 tools tests all green; `local-cross` rebuilt
-    (`build/windows-local/ApexCombat.dll`); `tools/audit-dll.py`
-    clean (exit 0); re-packaged `dist/` (dll inside zip sha256
-    `3a3b7ea2...`, differs from the `f0ab372` build `849120e7...`).
+   - Validation: `tools/build.sh native-tests` 4/4 CTest suites +
+     7 tools tests all green; `local-cross` rebuilt
+     (`build/windows-local/ApexCombat.dll`); `tools/audit-dll.py`
+     clean (exit 0); re-packaged `dist/` (dll inside zip sha256
+     `3a3b7ea2...`, differs from the `f0ab372` build `849120e7...`).
+- **TrueHUD poise bar round (this session, uncommitted→committed
+  below)**: vendored `third_party/truehud/TrueHUDAPI.h` (copied from
+  the installed SCAR source; TrueHUD 1.1.9.0 installed, API V1).
+  `ConnectTrueHud()` requests V1, takes special-bar control (warns and
+  degrades on `AlreadyTaken`), registers current/max callbacks
+  (recursive `stateMutex` lock; `PoiseResource` helper). Bar flashes:
+  `FlashPoiseResult` sends a short flash on applied poise damage and a
+  long flash on a break, wired into all three `PreHit` branches after
+  lock release (`ApplyDefenderPoise` now returns `Core::PoiseResult`).
+  Config: `poise.hud` (default true, only consulted when poise is on);
+  capabilities log gained `TrueHUD poise bar={}`. **Poise flipped to
+  enabled in the shipped INI** (`[Poise] enabled = true`): the user
+  retired Chocolate Poise; code default stays false so a missing
+  config cannot double-stagger.
+- **Perfect-parry feedback SFX round (this session)**: user asked
+  whether For Honor or Sekiro Combat effects could be used. Mutagen
+  dump (active profile `KINMUNE CS TEST`) showed `SekiroCombat_II.esp`
+  exposes no MGEF/SPEL records (script/native-driven), while
+  `For Honor Balance Patch.esp` carries the right sound descriptors:
+  `0x82D` SNDR `WeaponParrySFX`, `0x82C` SNDR `ShieldParrySFX`,
+   `0x868` SNDR `ParryStance`. (The `WeaponParryTrigger` etc. MGEFs are
+   script-typed containers gated by conditions — not directly usable.)
+   Implemented sound playback instead of spell application:
+   `perfectblock.parrySoundWeapon` / `parrySoundShield` config keys
+   (`Plugin.esp|0xFormID` specs, empty disables). **Defaults are vanilla
+   records — `Skyrim.esm|0x3C73C` `WPNBlockBlade1HandVsOtherSD` (weapon)
+   and `Skyrim.esm|0x3C740` `WPNBlockShieldLSD` (shield)** — after the
+   user pointed out `For Honor Balance Patch.esp` is not in their main
+   load order (it is only enabled in `KINMUNE CS TEST` and `KINMUNE II`,
+   not `KINMUNE CS`), making a For Honor default degrade silently to
+   nothing. No companion ESP needed for SFX (Skyrim audio always plays
+   through a plugin form, and vanilla forms cover it); an ESP is only
+   worth revisiting for the milestone 0.2 counterattack adapter records,
+   which genuinely need one. For Honor users can repoint via the INI
+   (shipped INI documents both For Honor specs as comments).
+   `ResolveConfiguredSound` parses/validates at init
+   (warn-once, `FormType::SoundRecord` check, 0 on failure);
+  `PlayParryFeedback` plays via `BSAudioManager::Play(FormID)`, picks
+  the shield variant when `GetWornArmor(kShield)`, and only fires when
+  the attacker or defender is the player (avoids distant 2D clangs).
+  Gated on the previously-unused `parried` flag in `PreHit`.
+  Capabilities log gained `parry sfx={}`.
+  - Tests: ConfigurationTests defaults/full-override/shipped-INI
+    coverage for both new keys; `tools/build.sh native-tests` 4/4
+    CTest suites + 7 tools tests green; `local-cross` rebuilt;
+     `tools/audit-dll.py` clean; re-packaged `dist/` (dll inside zip
+     sha256 `819de127...` with the vanilla defaults).
+  - README: poise paragraph rewritten (enabled-in-shipped-INI, TrueHUD
+    bar, parry clangs); config table gained `poise.hud` and both
+    parry-sound rows; "not yet implemented" no longer lists the poise
+    HUD.
+- **Perfect-parry spark VFX round (this session)**: layered a visual on
+  top of the working clang. Went through three iterations and two
+  distinct root causes before landing a clean, minimal implementation.
+  - **Final design (Option A — engine-driven spark).** `PlayParryFeedback`
+    spawns a single `BSTempEffectParticle::Spawn(cell, 0.0f,
+    "ApexCombat\\impact{Weapon,Shield}Root.nif", rotate, position, 1.0f,
+    4U, node)` at the blocking weapon/shield node. Those root NIFs are
+    byte-exact copies of vanilla `fxmetalsparkimpact01.nif`; attaching
+    the `FXMetalSparkImpact01`/`AddOnNode52` root makes **Skyrim itself
+    fire the vanilla metal-spark impact** at that node — the same flash
+    players see on a real block. Same recipe Elden Parry uses (its DLL
+    spawns only its own renamed copy of that vanilla NIF; verified by
+    disassembly). No custom spark/flare NIFs, no emission patching.
+  - **RCA #1 — the "instant crash" was the SOUND, not the VFX.** Two
+    CrashLogger logs (`crash-2026-11-01-00-29-21`, `-00-35-49`) both
+    showed `EXCEPTION_ACCESS_VIOLATION` null-read (`mov rax,[rcx]`,
+    `rcx=0`) in the audio manager resolving a `BGSSoundDescriptorForm`
+    from `ApexCombat.esp` — the missing-CNAM SNDR bug fixed earlier.
+    Cause: the MO2 mod folder had a **stale pre-fix `ApexCombat.esp`**
+    (sha256 `f6eecd59...`); the fixed ESP (`1ff4a84f...`) had never been
+    copied over it. Redeployed the fixed ESP → crash gone. Lesson:
+    verify the deployed ESP sha, not just the DLL, after each round.
+  - **RCA #2 — "sound but no visual" was corrupted root NIFs.** The C++
+    spawn was always correct (identical to Elden Parry). All four Apex
+    `impact{Weapon,Shield}Root.nif` files (mod dir + package) were
+    structurally broken vs vanilla: `BSXFlags=4` (wrongly marks the
+    effect root a skeleton NIF; vanilla=2), `BSValueNode.Value=901`
+    (references a non-existent attachment; vanilla=52=`AddOnNode52`),
+    and a bloated string table. Engine looked up attachment 901, found
+    nothing, rendered zero. Fixed by replacing all four with exact
+    vanilla `fxmetalsparkimpact01.nif` bytes (593 B, sha256
+    `2dd35d9f...`) — pure asset swap, no rebuild.
+  - **Cleanup.** Option A does not spawn `sparks.nif` /
+    `sparksflarerings.nif` / `RingsFlare.dds`, so those dead assets were
+    removed from `package/` and the live mod dir; stale "ring flare /
+    sparks burst" comments corrected in `Configuration.h` and the INI.
+  - Reference mods studied (installed 2026-11-01): **Elden Parry**
+    (dTry; SKSE DLL, the architecture template), **Valhalla Combat**,
+    **Parry For All - ImpactFX** (ToyzFX; source of the earlier
+    spark/flare NIF experiments).
+  - Validation: user confirmed in-game — spark flash now appears on
+    parry with the clang, no crash, no lingering orb. `local-cross`
+    rebuilt (dll sha256 `f150c0a9...`), `tools/audit-dll.py` clean,
+    `tools/package.py` re-packaged `dist/` (zip ESP `1ff4a84f...`, NIFs
+    `2dd35d9f...`, SHA256SUMS refreshed).
+  - README: perfect-parry paragraph now mentions the spark flash;
+    config table gained `parrySoundVolume` and `parryVisual` rows.
+  - Not perfect yet (user): spark visual could be tuned further (size/
+    position/optional fuller ring flare). Parked as a follow-up polish
+    item — see "Open items".
 
 ## Next steps (execute in order)
 
@@ -316,6 +417,11 @@ diagnostic behavior are already generic.
 - Separate pullback-vs-full-draw bow drain rates: current build uses
   one rate (`stamina.bowdrawdrainpersecond`) for the whole draw; add a
   second key only if the user asks.
+- Parry spark VFX polish (Option A shipped, user: "decent, not
+  perfect"): candidate tweaks are spark size/position and re-adding a
+  fuller ring-flare layer on top of the vanilla spark. The removed
+  `sparks.nif`/`sparksflarerings.nif`/`RingsFlare.dds` experiments are
+  recoverable from git history if a layered look is wanted later.
 - Watch for idle-hold drain: `kBowAttached` is assumed to be a
   transient pullback state; if the user reports stamina draining while
   idling with a nocked bow, gate the `kBowAttached` branch behind a
