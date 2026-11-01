@@ -20,6 +20,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <vector>
 
 namespace Apex {
 namespace {
@@ -429,6 +430,9 @@ bool IncomingEvent(RE::Actor* actor, std::string_view event) {
     return true;
 }
 
+// Defined below with the shield-turtle driver; the graph hook calls it.
+void BashReactionRoll(RE::Actor* player, TimeMs now);
+
 template<bool Player>
 struct GraphHooks {
     using Holder = RE::IAnimationGraphManagerHolder;
@@ -460,7 +464,8 @@ struct GraphHooks {
                     return false;
                 }
                 slotGranted = true;
-                if (slot.retaliating) Trace(actor, "slot-retaliate", 0, 0);
+                Trace(actor, slot.retaliating ? "slot-retaliate" : "slot-granted", 0,
+                    static_cast<float>(slot.expiresAt - now));
             }
         }
         if (bash && (actor->IsStaggered() || !BeginBash(actor, now))) {
@@ -475,6 +480,9 @@ struct GraphHooks {
             if (actor->IsPlayerRef()) RE::HUDMenu::FlashMeter(RE::ActorValue::kStamina);
             return false;
         }
+        // Bash-as-reaction: nearby blocking shield NPCs roll against the
+        // player's attack begin. Rolled once per begin, win or lose.
+        if (request && actor->IsPlayerRef()) BashReactionRoll(actor, now);
         const bool result = notify(holder, name);
         if (result && (event == "blockstart" || event == "sbf_blockstart")) BlockEvent(actor, true, now);
         if (event == "blockstop" || event == "sbf_blockstop" || event == "staggerstart") BlockEvent(actor, false, now);
@@ -621,6 +629,33 @@ bool TurtleTick(RE::Actor* actor, RE::Actor* target, ActorState& state, TimeMs n
     actor->SetGraphVariableFloat("InputMagnitude", 0.5F);
     if (!actor->IsBlocking()) actor->NotifyAnimationGraph("blockStart");
     return true;
+}
+
+// Bash-as-reaction: when the player's attack begins near blocking shield
+// NPCs that target the player, each rolls bashReactionChance once per attack.
+// The bash is dispatched as a vanilla bashStart, so the cooldown, stamina
+// cost, SCAR conditions, and exhaustion gate all apply unchanged. Callers
+// hold no lock; the roll is taken under stateMutex, the dispatch outside it.
+void BashReactionRoll(RE::Actor* player, TimeMs now) {
+    if (!config.director || !EligibleActor(player)) return;
+    std::vector<RE::Actor*> candidates;
+    {
+        std::scoped_lock lock(stateMutex);
+        for (auto& [id, state] : actors) {
+            auto* actor = RE::TESForm::LookupByID<RE::Actor>(id);
+            if (!EligibleActor(actor) || actor->IsPlayerRef() || !actor->IsBlocking()) continue;
+            if (DirectorTarget(actor) != player) continue;
+            const float dist = actor->GetPosition().GetDistance(player->GetPosition());
+            if (dist > config.circleRadiusMax * 1.5F) continue;
+            if (state.bashPending) continue;
+            if (!aiRules.rollBash(true, RandomUnit())) continue;
+            candidates.push_back(actor);
+        }
+    }
+    for (auto* actor : candidates) {
+        Trace(actor, "bash-reaction", 0, 0);
+        actor->NotifyAnimationGraph("bashStart");
+    }
 }
 
 // Distance-banded per-NPC tick from the Actor::Update hook: 100 ms near the

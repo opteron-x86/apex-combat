@@ -545,6 +545,27 @@ diagnostic behavior are already generic.
   - Build: native tests green (6 CTest suites incl. new turtle checks +
     7 tools), local-cross linked clean, audit-dll clean (x64, 3 exports),
     re-packaged, DLL synced to the MO2 mod dir (sha256 verified).
+- **Milestone 0.3 round 4 (uncommitted)** — bash-as-reaction rolls +
+  slot diagnostics:
+  - `BashReactionRoll()`: on each player attack begin, every blocking
+    shield NPC whose combat target is the player and who is within
+    1.5x circleRadiusMax rolls `bashReactionChance` once (per begin, not
+    per frame); winners dispatch a vanilla `bashStart`, so cooldown,
+    stamina cost, SCAR conditions, and the exhaustion gate all apply
+    unchanged. Skips actors with a pending uncommitted bash. Traces
+    `bash-reaction` per dispatch.
+  - Slot diagnostics: `slot-granted` trace (amount = granted window ms)
+    now fires on every non-retaliation grant, answering the round-3
+    playtest question (only `slot-retaliate` appeared then; `slot-denied`
+    legitimately requires 3+ simultaneous attackers).
+  - Forward declarations for `BashReactionRoll`/`DirectorTick` placed
+    ahead of the GraphHooks/UpdateHooks templates.
+  - Playtest interpretation: no `turtle-enter` in round 3 likely means
+    NPCs never held block long enough for entry (vanilla block uptime is
+    low) — entry conditions are working as designed but may need a
+    future "encourage block" step if turtles should circle more.
+  - Build: native tests green, local-cross linked clean, audit-dll
+    clean, re-packaged, DLL synced to the MO2 mod dir (sha256 verified).
 
 ## Next steps (execute in order)
 
