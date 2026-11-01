@@ -70,7 +70,8 @@ bool boolean(std::string_view text, bool& target)
 bool knownSection(std::string_view section)
 {
     return section == "general" || section == "stamina" || section == "perfectblock" ||
-           section == "counterattack" || section == "poise" || section == "debug";
+           section == "counterattack" || section == "poise" || section == "director" ||
+           section == "debug";
 }
 
 bool knownKey(std::string_view key)
@@ -99,6 +100,13 @@ bool knownKey(std::string_view key)
            key == "poise.perfectparrydamage" || key == "poise.recoverydelayseconds" ||
            key == "poise.recoverypersecond" || key == "poise.breakrecoveryseconds" ||
            key == "poise.hud" ||
+           key == "director.enabled" || key == "director.playeronly" ||
+           key == "director.maxattackers" || key == "director.slotwindowminseconds" ||
+           key == "director.slotwindowmaxseconds" || key == "director.retaliationseconds" ||
+           key == "director.bashcooldownseconds" || key == "director.bashreactionchance" ||
+           key == "director.bashproactivechance" || key == "director.bashstaminacost" ||
+           key == "director.maxcircleseconds" || key == "director.circleradiusmin" ||
+           key == "director.circleradiusmax" ||
            key == "debug.trace";
 }
 
@@ -172,6 +180,37 @@ bool apply(Configuration& config, const std::string& key, std::string_view value
         const auto ms = static_cast<Core::TimeMs>(seconds * 1000.0F);
         if (key == "poise.recoverydelayseconds") config.poiseSettings.recoveryDelayMs = ms;
         else config.poiseSettings.breakRecoveryMs = ms;
+        return true;
+    }
+    if (key == "director.enabled") return boolean(value, config.director);
+    if (key == "director.playeronly") return boolean(value, config.directorPlayerOnly);
+    if (key == "director.maxattackers")
+        return number(value, std::uint32_t{1}, std::uint32_t{5}, config.aiSettings.maxAttackers);
+    if (key == "director.bashreactionchance")
+        return number(value, 0.0F, 1.0F, config.aiSettings.bashReactionChance);
+    if (key == "director.bashproactivechance")
+        return number(value, 0.0F, 1.0F, config.aiSettings.bashProactiveChance);
+    if (key == "director.bashstaminacost")
+        return number(value, 0.0F, 1000.0F, config.aiSettings.bashStaminaCost);
+    if (key == "director.circleradiusmin")
+        return number(value, 50.0F, 2000.0F, config.circleRadiusMin);
+    if (key == "director.circleradiusmax")
+        return number(value, 50.0F, 2000.0F, config.circleRadiusMax);
+    if (key == "director.slotwindowminseconds" || key == "director.slotwindowmaxseconds" ||
+        key == "director.retaliationseconds" || key == "director.bashcooldownseconds" ||
+        key == "director.maxcircleseconds") {
+        const bool circle = key == "director.maxcircleseconds";
+        const bool slot = key == "director.slotwindowminseconds" || key == "director.slotwindowmaxseconds";
+        float seconds = 0.0F;
+        const float minimum = slot ? 0.5F : (circle ? 1.0F : 0.0F);
+        const float maximum = circle ? 120.0F : (slot ? 30.0F : 60.0F);
+        if (!number(value, minimum, maximum, seconds)) return false;
+        const auto ms = static_cast<Core::TimeMs>(seconds * 1000.0F);
+        if (key == "director.slotwindowminseconds") config.aiSettings.slotWindowMinMs = ms;
+        else if (key == "director.slotwindowmaxseconds") config.aiSettings.slotWindowMaxMs = ms;
+        else if (key == "director.retaliationseconds") config.aiSettings.retaliationMs = ms;
+        else if (key == "director.bashcooldownseconds") config.aiSettings.bashCooldownMs = ms;
+        else config.aiSettings.maxCircleMs = ms;
         return true;
     }
     if (key == "stamina.affordability") {

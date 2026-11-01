@@ -1,5 +1,6 @@
 #pragma once
 
+#include "AiRules.h"
 #include "CombatRules.h"
 #include "PoiseRules.h"
 
@@ -13,6 +14,15 @@ namespace Apex {
 struct Configuration {
     Core::Settings rules;
     Core::PoiseSettings poiseSettings;
+    Core::AiSettings aiSettings;
+    // Combat director (attack slots, bash discipline, circling). Staged
+    // migration: off in code and the shipped INI until validated in game.
+    bool director{false};
+    // Limits slot pacing to NPCs targeting the player; NPC-vs-NPC stays vanilla.
+    bool directorPlayerOnly{true};
+    // Circling ring radius band (game units) for non-slot holders.
+    float circleRadiusMin{200.0F};
+    float circleRadiusMax{320.0F};
     bool enabled{true};
     bool playerAttacks{true};
     bool npcAttacks{true};

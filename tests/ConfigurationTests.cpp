@@ -253,6 +253,108 @@ breakRecoverySeconds=60.5
     check(invalid.config.poiseSettings.breakRecoveryMs == 1500);
 }
 
+void directorConfiguration()
+{
+    const auto defaults = parseConfiguration("");
+    check(!defaults.config.director);
+    check(defaults.config.directorPlayerOnly);
+    check(defaults.config.aiSettings.maxAttackers == 2);
+    check(defaults.config.aiSettings.slotWindowMinMs == 4000);
+    check(defaults.config.aiSettings.slotWindowMaxMs == 8000);
+    check(defaults.config.aiSettings.retaliationMs == 3000);
+    check(defaults.config.aiSettings.bashCooldownMs == 6000);
+    near(defaults.config.aiSettings.bashReactionChance, 0.35F);
+    near(defaults.config.aiSettings.bashProactiveChance, 0.0F);
+    near(defaults.config.aiSettings.bashStaminaCost, 25);
+    check(defaults.config.aiSettings.maxCircleMs == 10000);
+    near(defaults.config.circleRadiusMin, 200);
+    near(defaults.config.circleRadiusMax, 320);
+
+    const auto full = parseConfiguration(R"ini(
+[Director]
+enabled=1
+playerOnly=0
+maxAttackers=4
+slotWindowMinSeconds=2
+slotWindowMaxSeconds=6.5
+retaliationSeconds=5
+bashCooldownSeconds=8
+bashReactionChance=0.5
+bashProactiveChance=0.1
+bashStaminaCost=40
+maxCircleSeconds=15
+circleRadiusMin=180
+circleRadiusMax=400
+)ini");
+    check(full.diagnostics.empty());
+    check(full.config.director);
+    check(!full.config.directorPlayerOnly);
+    check(full.config.aiSettings.maxAttackers == 4);
+    check(full.config.aiSettings.slotWindowMinMs == 2000);
+    check(full.config.aiSettings.slotWindowMaxMs == 6500);
+    check(full.config.aiSettings.retaliationMs == 5000);
+    check(full.config.aiSettings.bashCooldownMs == 8000);
+    near(full.config.aiSettings.bashReactionChance, 0.5F);
+    near(full.config.aiSettings.bashProactiveChance, 0.1F);
+    near(full.config.aiSettings.bashStaminaCost, 40);
+    check(full.config.aiSettings.maxCircleMs == 15000);
+    near(full.config.circleRadiusMin, 180);
+    near(full.config.circleRadiusMax, 400);
+    Core::AiRules validated(full.config.aiSettings);
+    check(validated.settings().maxAttackers == 4);
+
+    const auto limits = parseConfiguration(R"ini(
+[Director]
+maxAttackers=5
+slotWindowMinSeconds=0.5
+slotWindowMaxSeconds=30
+retaliationSeconds=0
+bashCooldownSeconds=1
+bashReactionChance=1
+bashProactiveChance=0
+bashStaminaCost=1000
+maxCircleSeconds=120
+circleRadiusMin=50
+circleRadiusMax=2000
+)ini");
+    check(limits.diagnostics.empty());
+    check(limits.config.aiSettings.maxAttackers == 5);
+    check(limits.config.aiSettings.slotWindowMinMs == 500);
+    check(limits.config.aiSettings.slotWindowMaxMs == 30000);
+    check(limits.config.aiSettings.retaliationMs == 0);
+    check(limits.config.aiSettings.bashCooldownMs == 1000);
+    check(limits.config.aiSettings.maxCircleMs == 120000);
+    Core::AiRules validatedLimits(limits.config.aiSettings);
+    check(validatedLimits.settings().maxAttackers == 5);
+
+    const auto invalid = parseConfiguration(R"ini(
+[Director]
+maxAttackers=0
+slotWindowMinSeconds=0.4
+slotWindowMaxSeconds=31
+retaliationSeconds=-1
+bashCooldownSeconds=61
+bashReactionChance=1.1
+bashProactiveChance=-0.1
+bashStaminaCost=1001
+maxCircleSeconds=0.9
+circleRadiusMin=49
+circleRadiusMax=2001
+)ini");
+    check(invalid.diagnostics.size() == 11);
+    check(invalid.config.aiSettings.maxAttackers == 2);
+    check(invalid.config.aiSettings.slotWindowMinMs == 4000);
+    check(invalid.config.aiSettings.slotWindowMaxMs == 8000);
+    check(invalid.config.aiSettings.retaliationMs == 3000);
+    check(invalid.config.aiSettings.bashCooldownMs == 6000);
+    near(invalid.config.aiSettings.bashReactionChance, 0.35F);
+    near(invalid.config.aiSettings.bashProactiveChance, 0.0F);
+    near(invalid.config.aiSettings.bashStaminaCost, 25);
+    check(invalid.config.aiSettings.maxCircleMs == 10000);
+    near(invalid.config.circleRadiusMin, 200);
+    near(invalid.config.circleRadiusMax, 320);
+}
+
 void whitespaceCommentsAndCase()
 {
     const auto result = parseConfiguration(
@@ -447,6 +549,7 @@ int main(int argc, char** argv)
 {
     defaultsAndCompleteConfiguration();
     poiseConfiguration();
+    directorConfiguration();
     whitespaceCommentsAndCase();
     strictNumbersAndFiniteBounds();
     invalidBooleansDoNotEnableFeatures();
@@ -476,6 +579,13 @@ int main(int argc, char** argv)
         near(shipped.config.poiseSettings.recoveryPerSecond, 20);
         Core::PoiseRules validatedPoise(shipped.config.poiseSettings);
         check(validatedPoise.settings().maxPoise == 100);
+        check(!shipped.config.director);
+        check(shipped.config.directorPlayerOnly);
+        Core::AiRules validatedAi(shipped.config.aiSettings);
+        check(validatedAi.settings().maxAttackers == 2);
+        check(validatedAi.settings().bashCooldownMs == 6000);
+        near(shipped.config.circleRadiusMin, 200);
+        near(shipped.config.circleRadiusMax, 320);
     }
     std::cout << "Configuration: " << checks << " checks passed\n";
 }

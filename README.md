@@ -68,6 +68,17 @@ All options live in `<game>/Data/SKSE/Plugins/ApexCombat.ini`. Restart the game 
 | Poise | `recoveryDelaySeconds` | `3.0` | Delay before poise regen after a hit. |
 | Poise | `recoveryPerSecond` | `20.0` | Poise regenerated per second after the delay. |
 | Poise | `breakRecoverySeconds` | `1.5` | Stagger length after a break; no further poise damage inside the window. |
+| Director | `enabled` | `false` | Combat AI director (attack slots, bash discipline, circling); off until playtested. |
+| Director | `playerOnly` | `true` | Limit slot pacing to NPCs targeting the player; NPC-vs-NPC stays vanilla. |
+| Director | `maxAttackers` | `2` | Maximum simultaneous melee attackers per target, `1`–`5`. |
+| Director | `slotWindowMinSeconds` / `slotWindowMaxSeconds` | `4.0` / `8.0` | A granted attack slot lasts a randomized interval in this range. |
+| Director | `retaliationSeconds` | `3.0` | Hitting a circling NPC lets it retaliate past the slot count this long; `0` disables. |
+| Director | `bashCooldownSeconds` | `6.0` | Minimum interval between one NPC's bashes. |
+| Director | `bashReactionChance` | `0.35` | Chance a blocking shield NPC bashes in reaction to a player attack, `0`–`1`. |
+| Director | `bashProactiveChance` | `0.0` | Chance of a bash against a passive target; `0` means no unpunishable openers. |
+| Director | `bashStaminaCost` | `25` | Stamina a bash costs the basher, NPC and player alike. |
+| Director | `maxCircleSeconds` | `10.0` | A circling shield NPC with no opening for this long commits anyway. |
+| Director | `circleRadiusMin` / `circleRadiusMax` | `200` / `320` | Circling ring radius band for non-slot holders, in game units. |
 | Debug | `trace` | `false` | Log every admission, commit, and parry decision. |
 
 ## Building

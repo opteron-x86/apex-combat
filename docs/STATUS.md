@@ -5,19 +5,21 @@ Update it at the end of every session: mark completed work, record new
 decisions with their evidence, and rewrite "Next steps" so a fresh session
 can resume without re-deriving context.
 
-Last updated: 2026-11-01 (session: counterattack re-arm fix + window poise bonus shipped and validated in game)
+Last updated: 2026-11-01 (session: milestone 0.3 round 1 — AiRules core + [Director] config shipped, director disabled by default)
 
 ## Project
 
 Skyrim SE/AE/VR SKSE plugin (`ApexCombat`) implementing combat stamina
 gating, BFCO/MCO attack admission, and perfect-block parries. Milestone
-0.1 (issues #1–#5) is complete, packaged, and pushed. Current work is
-stamina features from in-game testing, leading toward milestone 0.2
-(issue #6: poise + For Honor counterattacks).
+0.1 (issues #1–#5) is complete, packaged, and pushed. Milestone 0.2
+(poise + counterattacks, issue #6) is shipped and validated in game.
+Current work is milestone 0.3: the Combat AI Director (attack slots,
+bash discipline, shield-turtle behavior) as a full native replacement
+for Wait Your Turn Redux + Enhanced Combat AI.
 
 - Repo: `https://github.com/opteron-x86/apex-combat`
-- Branch: `feat/stamina-parry-foundation` @ `d3ebd99` (pushed, tree clean
-  at time of last session end)
+- Branch: `feat/stamina-parry-foundation` @ `31fa9de` + uncommitted 0.3
+  round (AiRules core + config); master merged and pushed at `31fa9de`.
 - Base: `b11dc99`
 - Do NOT commit unless explicitly asked; the user has authorized commits
   so far (commit + push after each feature round).
@@ -435,16 +437,60 @@ diagnostic behavior are already generic.
     light hits `amount=18.75` = 15 × 1.25). User confirmed: "playtest
     looks good — no stamina drain on counter power attack after a
     perfect parry."
+- **Milestone 0.3 round 1 (uncommitted)** — Combat AI Director core +
+  config (full design in `docs/MILESTONE-0.3-combat-ai-director.md`):
+  - Research: incumbent comparison from installed configs + source-level
+    analysis of ECAI (github.com/tavvfiq/combat-ai-ng, cloned at
+    `/tmp/opencode/combat-ai-ng`). ECAI has no native movement (CPR
+    graph vars), no sustained block, 100ms-polled attack detection.
+  - Core (`src/core/AiRules.h/.cpp`, CTest suite `ai_rules`): slot
+    ledger per target (lazy expiry, randomized window in
+    [slotWindowMinMs, slotWindowMaxMs], holder re-acquire keeps expiry,
+    retaliation window bypasses the count exactly once and is consumed),
+    bash discipline (per-actor cooldown recorded at begin, `cancelBash`
+    only cancels the matching recordedAt, reaction/proactive chance
+    rolls with injected samples). `AiSettings` validation (1..5
+    attackers, min<=max window, finite chances 0..1, non-negative cost,
+    maxCircleMs > 0); `resetActor` / `resetSession`.
+  - Configuration: `[Director]` section with 13 keys (enabled,
+    playerOnly, maxAttackers, slot window min/max seconds, retaliation
+    seconds, bash cooldown/reaction/proactive/stamina cost, max circle
+    seconds, circle radius min/max) — all with ranges and seconds->ms
+    conversion; `Configuration` gained `aiSettings`, `director` (false),
+    `directorPlayerOnly` (true), `circleRadiusMin/Max` (200/320).
+  - Shipped INI: `[Director]` block added with defaults and
+    `enabled = false` (staged migration: no behavior change until
+    playtested).
+  - Tests: 17 AiRules test functions (custom check-macro style);
+    ConfigurationTests gained `directorConfiguration()` (defaults,
+    full custom, limits, invalid count 11, AiRules cross-validation)
+    plus shipped-INI director assertions. All green: 5 CTest suites +
+    7 tools tests.
+  - Build/deploy: `local-cross` rebuilt, `tools/audit-dll.py` clean,
+    `tools/package.py` re-packaged `dist/`, DLL + INI synced to
+    `/mnt/mods/Amaranth/mods/Apex Combat/SKSE/Plugins/`.
+  - README: 12 Director config table rows added.
 
 ## Next steps (execute in order)
 
-1. Milestone 0.2 remainder (issue #6): For Honor counterattack effect
+1. Milestone 0.3 (design: `docs/MILESTONE-0.3-combat-ai-director.md`):
+   runtime admission wiring in `src/runtime/Runtime.cpp` — `AiRules`
+   instance + mutex-protected bash gate at bash begins (with
+   `cancelBash` on SCAR rejection / supersede / cancellation / expiry,
+   same re-arm pattern as counterattacks), bash stamina debit through
+   the existing `beginAttack`/`commitAttack` path, slot acquire/release
+   on NPC attack begins/commits targeting the player,
+   `onTargetDamagedAttacker` from PreHit, traces
+   (`bash-denied-cooldown`/`bash-denied-stamina`/`bash-reaction`).
+   Then shield-turtle state machine, circling movement, in-game
+   validation, retire WYR + ECAI.
+2. Milestone 0.2 remainder (issue #6): For Honor counterattack effect
    adapters (trace the actual plugin records — FormKeys 0x5F5/0x89F/
    0x8BD via Variable01/Variable03 per the audit doc). Poise HUD owner
    is settled: TrueHUD special resource bar shipped in `88dea79`.
-2. Consolidation roadmap follow-ups (user's 3819-mod setup, after 0.2):
-   stamina regen + stagger knobs, AI attack tokens (retire Wait Your
-   Turn + Enhanced Combat AI), per-enemy styles.
+3. Consolidation roadmap follow-ups (user's 3819-mod setup, after 0.3):
+   stamina regen + stagger knobs, per-enemy styles, SCAR-AE fold-in
+   (github.com/doodlum/SCAR-AE) as a separate later decision.
 
 ## Open items / parked
 
