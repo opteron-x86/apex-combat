@@ -182,6 +182,12 @@ bool AiRules::rollBash(bool targetIsAttacking, float sample) const noexcept {
     return clamped < chance;
 }
 
+bool AiRules::isOpening(bool targetRecovering, bool targetStaggered, bool targetExhausted,
+    bool retaliating, TimeMs circleStartedAt, TimeMs now) const noexcept {
+    if (targetRecovering || targetStaggered || targetExhausted || retaliating) return true;
+    return now - circleStartedAt >= settings_.maxCircleMs;
+}
+
 void AiRules::resetActor(ActorId actor) noexcept {
     lastBash_.erase(actor);
     for (auto& [target, state] : targets_) {

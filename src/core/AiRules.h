@@ -106,6 +106,15 @@ public:
     // the roll passes for the given situation. Pure function of settings.
     bool rollBash(bool targetIsAttacking, float sample) const noexcept;
 
+    // --- Shield-turtle openings ----------------------------------------------
+
+    // A circling blocker commits to an attack when any opening holds:
+    // the target is mid-recovery, staggered, or exhausted; the circler's
+    // retaliation window is live; or the circle has outlasted maxCircleMs.
+    // Pure function — the runtime gathers the inputs per tick.
+    bool isOpening(bool targetRecovering, bool targetStaggered, bool targetExhausted,
+        bool retaliating, TimeMs circleStartedAt, TimeMs now) const noexcept;
+
     // --- Housekeeping -------------------------------------------------------
 
     void resetActor(ActorId actor) noexcept;

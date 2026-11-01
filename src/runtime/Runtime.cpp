@@ -53,9 +53,21 @@ struct ActorState {
     EventToken freePowerStage{0};
     TimeMs lastSeen{0};
     // Director: a recorded bash whose commit never landed must be cancelled
-    // (rejected/superseded begin), restoring the cooldown.
+    // (rejected/superseded begin), restoring the cooldown. bashStage is the
+    // admission token of the bash's own attack stage (0 when the bash cost
+    // nothing and no stage was opened); dispatch failure cancels exactly
+    // this token and never an interleaved attack's stage.
     bool bashPending{false};
     TimeMs bashRecordedAt{0};
+    EventToken bashStage{0};
+    // Director shield-turtle: while circling, this NPC holds block and
+    // strafes around its target until an opening (recovery, stagger,
+    // exhaustion, retaliation) or the max-circle timeout.
+    bool turtleCircling{false};
+    TimeMs turtleCircleSince{0};
+    bool turtleClockwise{false};
+    float turtleDirection{0.0F};  // actor-local degrees of the last strafe write
+    TimeMs directorLastTick{0};
     Core::ParryContacts contacts;
 };
 std::unordered_map<RE::FormID, ActorState> actors;
@@ -238,11 +250,6 @@ bool Begin(RE::Actor* actor, bool power, TimeMs now) {
     state.committed = false;
     state.denied = !result.accepted;
     state.nextStage = false;
-    // A free counterattack refunds the engine's own power-attack drain for one
-    // stage. The refund baseline is the stamina measured here, at the consuming
-    // begin: the core re-arms the reward on every retry begin, so the binding is
-    // refreshed per begin and the drop excludes stamina spent before this swing.
-    // The refund fires at the first settle point that observes the drop.
     if (result.freeCounterattack) {
         state.freePowerPending = true;
         state.freePowerBaseline = baseline;
@@ -289,11 +296,19 @@ bool BeginBash(RE::Actor* actor, TimeMs now) {
     }
     const float baseline = Stamina(actor);
     // DualWield is the custom-cost kind; the nominal cost is the bash's.
-    auto result = rules.beginAttack(actorId, ++state.stage, AttackKind::DualWield, baseline, now, 0.0F, cost);
+    // The bash shares the per-actor stage counter with ordinary attacks —
+    // bashes and attacks never overlap in one actor's graph — but the token
+    // is also latched so a failed dispatch cancels this stage and not a
+    // later attack's.
+    state.bashStage = ++state.stage;
+    auto result = rules.beginAttack(actorId, state.bashStage, AttackKind::DualWield, baseline, now, 0.0F, cost);
     state.committed = false;
     state.denied = !result.accepted;
     state.nextStage = false;
-    if (!result.accepted) CancelPendingBash(actor, state);
+    if (!result.accepted) {
+        CancelPendingBash(actor, state);
+        state.bashStage = 0;
+    }
     ObserveExhaustion(actor, result.exhausted, now);
     Trace(actor, result.accepted ? "bash-admit" : "bash-reject", state.stage, result.nominalCost,
         static_cast<int>(result.reason));
@@ -334,6 +349,7 @@ bool Commit(RE::Actor* actor, TimeMs now) {
     // The bash debit landed; the cooldown record now stands on its own.
     state.bashPending = false;
     state.bashRecordedAt = 0;
+    state.bashStage = 0;
     if (result.staminaDebit > 0) {
         actor->AsActorValueOwner()->DamageActorValue(RE::ActorValue::kStamina, result.staminaDebit);
         auto* process = actor->GetActorRuntimeData().currentProcess;
@@ -392,7 +408,13 @@ bool IncomingEvent(RE::Actor* actor, std::string_view event) {
         std::scoped_lock lock(stateMutex);
         auto& state = State(actor, now);
         CancelPendingBash(actor, state);
-        rules.cancelAttack(actor->GetFormID(), state.stage, now);
+        if (state.bashStage != 0) {
+            // The interrupted stage is the bash's; cancel it by its token.
+            rules.cancelAttack(actor->GetFormID(), state.bashStage, now);
+            state.bashStage = 0;
+        } else {
+            rules.cancelAttack(actor->GetFormID(), state.stage, now);
+        }
         state.nextStage = true;
         SettleFreeCounterattack(actor, state, now);
     } else if (event == "attackend") {
@@ -441,7 +463,7 @@ struct GraphHooks {
                 if (slot.retaliating) Trace(actor, "slot-retaliate", 0, 0);
             }
         }
-        if (bash && !BeginBash(actor, now)) {
+        if (bash && (actor->IsStaggered() || !BeginBash(actor, now))) {
             if (actor->IsPlayerRef()) RE::HUDMenu::FlashMeter(RE::ActorValue::kStamina);
             return false;
         }
@@ -471,7 +493,10 @@ struct GraphHooks {
             std::scoped_lock lock(stateMutex);
             auto& state = State(actor, now);
             CancelPendingBash(actor, state);
-            rules.cancelAttack(actor->GetFormID(), state.stage, now);
+            if (state.bashStage != 0) {
+                rules.cancelAttack(actor->GetFormID(), state.bashStage, now);
+                state.bashStage = 0;
+            }
             state.nextStage = true;
             Trace(actor, "bash-dispatch-failed", state.stage, 0);
         }
@@ -495,6 +520,9 @@ struct GraphHooks {
     }
 };
 
+// Defined below with the shield-turtle driver; the Update hook calls it.
+void DirectorTick(RE::Actor* actor, TimeMs now);
+
 // Per-frame Actor::Update hook (vtable slot 0xAD): drains stamina while a bow
 // is drawn and keeps regen paused for the whole hold. Runs on the game thread;
 // it reads no shared runtime state, so no lock is needed.
@@ -517,6 +545,7 @@ struct UpdateHooks {
                 SettleFreeCounterattack(actor, found->second, Now());
             }
         }
+        if constexpr (!Player) DirectorTick(actor, Now());
         if (config.bowDrawDrainPerSecond <= 0.0F) return;
         auto* actorState = actor->AsActorState();
         const auto attack = actorState ? actorState->GetAttackState() : RE::ATTACK_STATE_ENUM::kNone;
@@ -537,6 +566,96 @@ struct UpdateHooks {
         update = table.write_vfunc(0xAD, Hook);
     }
 };
+
+// --- Shield-turtle driver ---------------------------------------------------
+// While an NPC circles, it holds block and strafes around its target until an
+// opening (target recovery/stagger/exhaustion, live retaliation) or the
+// max-circle timeout. The commit is a vanilla attackstart: the ordinary
+// admission + slot path gates it. Movement is graph-var driven (the mechanism
+// ECAI proved); a failed write just retries next tick.
+
+void TurtleStop(RE::Actor* actor, ActorState& state) {
+    state.turtleCircling = false;
+    actor->SetGraphVariableFloat("Speed", 0.0F);
+    actor->SetGraphVariableFloat("InputMagnitude", 0.0F);
+}
+
+// Returns true while circling continues this tick. Caller must hold stateMutex.
+bool TurtleTick(RE::Actor* actor, RE::Actor* target, ActorState& state, TimeMs now) {
+    const auto targetStateIt = actors.find(target->GetFormID());
+    const auto* targetState = targetStateIt != actors.end() ? &targetStateIt->second : nullptr;
+    // The target is "recovering" while it has an uncommitted attack stage —
+    // the swing is out and the stamina debit hasn't landed yet.
+    const bool recovering = targetState && !targetState->committed &&
+        (targetState->stage != 0 || targetState->bashStage != 0);
+    const bool exhausted = targetState ? targetState->exhausted : false;
+    const bool retaliating = aiRules.retaliationActive(target->GetFormID(), actor->GetFormID(), now);
+    const bool opening = aiRules.isOpening(recovering, target->IsStaggered(), exhausted,
+        retaliating, state.turtleCircleSince, now);
+    if (opening) {
+        TurtleStop(actor, state);
+        // A vanilla attack begin: admission, stamina cost, exhaustion gate,
+        // and the slot ledger all still gate the actual swing.
+        actor->NotifyAnimationGraph("attackStart");
+        Trace(actor, "turtle-commit", state.stage, 0);
+        return false;
+    }
+    // Keep circling: strafe perpendicular to the target bearing, curving
+    // toward the preferred radius band.
+    const auto toTarget = target->GetPosition() - actor->GetPosition();
+    const float distance = std::sqrt(toTarget.x * toTarget.x + toTarget.y * toTarget.y);
+    const float sign = state.turtleClockwise ? 1.0F : -1.0F;
+    RE::NiPoint3 strafe{-toTarget.y * sign, toTarget.x * sign, 0.0F};
+    if (distance > config.circleRadiusMax) strafe += toTarget * 0.4F;
+    else if (distance < config.circleRadiusMin) strafe -= toTarget * 0.4F;
+    const auto* actor3D = actor->Get3D();
+    if (!actor3D) return true;  // keep state; retry when the 3D loads
+    const auto local = actor3D->world.rotate.Transpose() * strafe;
+    const float direction = std::atan2(local.x, local.y) * 57.2957795F;
+    state.turtleDirection = direction;
+    actor->SetGraphVariableFloat("Speed", 90.0F);  // walk pace; block caps it further
+    actor->SetGraphVariableFloat("Direction", direction);
+    actor->SetGraphVariableFloat("movementDirection", direction);
+    actor->SetGraphVariableFloat("movementSpeed", 0.5F);
+    actor->SetGraphVariableFloat("InputDirection", direction);
+    actor->SetGraphVariableFloat("InputMagnitude", 0.5F);
+    if (!actor->IsBlocking()) actor->NotifyAnimationGraph("blockStart");
+    return true;
+}
+
+// Distance-banded per-NPC tick from the Actor::Update hook: 100 ms near the
+// player, 200 ms mid, skipped beyond 2000 units. Caller holds no lock.
+void DirectorTick(RE::Actor* actor, TimeMs now) {
+    auto* target = DirectorTarget(actor);
+    if (!target) return;
+    const auto player = RE::PlayerCharacter::GetSingleton();
+    if (!player) return;
+    const float playerDist = actor->GetPosition().GetDistance(player->GetPosition());
+    if (playerDist > 2000.0F) return;
+    const TimeMs band = playerDist > 1000.0F ? 200 : 100;
+    std::scoped_lock lock(stateMutex);
+    auto& state = State(actor, now);
+    if (now - state.directorLastTick < band) return;
+    state.directorLastTick = now;
+    if (!EligibleActor(target) || target->IsDead()) {
+        if (state.turtleCircling) TurtleStop(actor, state);
+        return;
+    }
+    if (!state.turtleCircling) {
+        // Enter circling: shield up (left-hand armor), in range, no slot
+        // held. NPCs without a shield keep the vanilla pressure game.
+        const auto* left = actor->GetEquippedObject(true);
+        if (!actor->IsBlocking() || !left || !left->IsArmor()) return;
+        if (aiRules.holdsSlot(target->GetFormID(), actor->GetFormID(), now)) return;
+        const float dist = actor->GetPosition().GetDistance(target->GetPosition());
+        if (dist > config.circleRadiusMax * 1.5F) return;
+        state.turtleCircling = true;
+        state.turtleCircleSince = now;
+        state.turtleClockwise = RandomUnit() < 0.5F;
+        Trace(actor, "turtle-enter", state.stage, 0);
+    }
+    TurtleTick(actor, target, state, now);
+}
 
 bool WithinBlockCone(RE::Actor* defender, RE::Actor* attacker) {
     const auto delta = attacker->GetPosition() - defender->GetPosition();
@@ -871,6 +990,13 @@ class LifecycleEvents final : public RE::BSTEventSink<RE::TESObjectLoadedEvent>,
     RE::BSEventNotifyControl ProcessEvent(const RE::TESObjectLoadedEvent* event, RE::BSTEventSource<RE::TESObjectLoadedEvent>*) override {
         if (event && !event->loaded) {
             std::scoped_lock lock(stateMutex);
+            const auto found = actors.find(event->formID);
+            if (found != actors.end() && found->second.turtleCircling) {
+                // Zero the locomotion writes before the state dies with the
+                // actor's graph; a reloaded actor starts from a clean slate.
+                if (auto* actor = RE::TESForm::LookupByID<RE::Actor>(event->formID))
+                    TurtleStop(actor, found->second);
+            }
             rules.resetActor(event->formID);
             poiseRules.resetActor(static_cast<Core::ActorId>(event->formID));
             aiRules.resetActor(static_cast<Core::ActorId>(event->formID));

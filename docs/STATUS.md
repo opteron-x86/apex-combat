@@ -504,6 +504,47 @@ diagnostic behavior are already generic.
   - Build: native tests green (5 CTest + 7 tools), local-cross linked
     clean, audit-dll clean (x64, 3 exports), re-packaged, DLL synced to
     the MO2 mod dir (sha256 verified).
+- **Milestone 0.3 round 3 (uncommitted)** — shield-turtle state machine +
+  circling movement, plus round-2 hardening fixes:
+  - Fix: bash dispatch failure and interrupt paths previously cancelled
+    `state.stage`, which could cancel an interleaved attack's token.
+    `ActorState.bashStage` now latches the bash's own admission token;
+    `Commit` clears it; dispatch-failure and attackstop/stagger/recoil
+    cancel exactly it (skipped when the bash cost nothing).
+  - Fix: bash branch in the Notify hook now checks `IsStaggered()` like
+    the attack path.
+  - `AiRules::isOpening()`: pure turtle-opening predicate (target
+    recovering/staggered/exhausted, live retaliation, or max-circle
+    timeout). 9 new checks in `turtleOpenings()`.
+  - `ActorState` turtle fields: `turtleCircling`, `turtleCircleSince`,
+    `turtleClockwise`, `turtleDirection`, `directorLastTick`.
+  - Turtle driver (`TurtleStop`/`TurtleTick`/`DirectorTick`):
+    - Entry: blocking NPC with a left-hand shield, no slot held, within
+      1.5x circleRadiusMax of a director-scoped target; random clockwise
+      coin-flip; traces `turtle-enter`.
+    - Circling: per-tick graph-var strafe (`Speed`=90, `Direction`,
+      `movementDirection`, `movementSpeed`, `InputDirection`,
+      `InputMagnitude` — ECAI's proven variable set) perpendicular to the
+      target bearing, curving inward/outward toward the
+      [circleRadiusMin, circleRadiusMax] band; re-asserts `blockStart`
+      when block drops.
+    - Commit: on any opening (target mid-recovery = uncommitted attack
+      stage, stagger, exhaustion, live retaliation, or maxCircleMs
+      timeout) stops circling and fires a vanilla `attackStart`, which
+      routes through the ordinary admission + slot gate; traces
+      `turtle-commit`.
+    - Tick banding in the per-frame `Actor::Update` hook (NPC vtable):
+      100 ms within 1000 u of the player, 200 ms to 2000 u, skipped
+      beyond (directorLastTick).
+    - Unload while circling zeroes the locomotion writes before the
+      actor's state is erased.
+  - In-game validation of rounds 1-2 (user): WYR + ECAI disabled,
+    `director.enabled=true` — bash spam visibly reduced, bash stamina
+    costs landing, trace logs correct. This also confirmed bash commits
+    fire prehitframe/weaponswing (the debit lands).
+  - Build: native tests green (6 CTest suites incl. new turtle checks +
+    7 tools), local-cross linked clean, audit-dll clean (x64, 3 exports),
+    re-packaged, DLL synced to the MO2 mod dir (sha256 verified).
 
 ## Next steps (execute in order)
 

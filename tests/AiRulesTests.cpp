@@ -206,6 +206,29 @@ void bashRollsRespectChances()
     check(eager.rollBash(false, 0.99F));
 }
 
+void turtleOpenings()
+{
+    AiSettings settings;
+    settings.maxCircleMs = 10000;
+    AiRules rules{settings};
+    const TimeMs started = 1000;
+
+    // No opening: passive target, fresh circle.
+    check(!rules.isOpening(false, false, false, false, started, started + 500));
+    // Each target-state opening on its own.
+    check(rules.isOpening(true, false, false, false, started, started + 500));
+    check(rules.isOpening(false, true, false, false, started, started + 500));
+    check(rules.isOpening(false, false, true, false, started, started + 500));
+    // Retaliation window opens it regardless of target state.
+    check(rules.isOpening(false, false, false, true, started, started + 500));
+    // Timeout boundary: strictly before maxCircleMs is closed, at/after is open.
+    check(!rules.isOpening(false, false, false, false, started, started + 9999));
+    check(rules.isOpening(false, false, false, false, started, started + 10000));
+    check(rules.isOpening(false, false, false, false, started, started + 60000));
+    // A circle that started later measures from its own start.
+    check(!rules.isOpening(false, false, false, false, started + 5000, started + 10000));
+}
+
 void resetActorClearsOnlyThatActor()
 {
     AiRules rules;
@@ -289,6 +312,7 @@ int main()
     cancelBashRestoresEligibility();
     bashRejectsInvalidInput();
     bashRollsRespectChances();
+    turtleOpenings();
     resetActorClearsOnlyThatActor();
     resetSessionClearsEverything();
     setSettingsValidatesAndClears();
