@@ -93,10 +93,11 @@ RejectReason CombatRules::affordabilityFailure(float stamina, float cost) const 
 
 AttackResult CombatRules::beginAttack(ActorId actor, EventToken stage, AttackKind kind,
                                       float stamina, TimeMs now, float vanillaPowerCost,
-                                      float customCost)
+                                      float customCost, float costMultiplier)
 {
     AttackResult result;
-    if (actor == 0 || stage == 0 || !std::isfinite(stamina)) {
+    if (actor == 0 || stage == 0 || !std::isfinite(stamina) ||
+        !std::isfinite(costMultiplier) || costMultiplier < 0.0F || costMultiplier > 1.0F) {
         result.reason = RejectReason::InvalidInput;
         return result;
     }
@@ -115,6 +116,10 @@ AttackResult CombatRules::beginAttack(ActorId actor, EventToken stage, AttackKin
         }
         cost = customCost;
         break;
+    case AttackKind::Bash:
+        // Native normal/power bash costs and their modifiers have one owner.
+        // Apex only requires positive stamina and tracks the accepted stage.
+        break;
     case AttackKind::Power:
         if (!validCost(vanillaPowerCost)) {
             result.reason = RejectReason::InvalidInput;
@@ -125,6 +130,12 @@ AttackResult CombatRules::beginAttack(ActorId actor, EventToken stage, AttackKin
     default:
         result.reason = RejectReason::InvalidInput;
         return result;
+    }
+
+    const bool engineOwnsCost = kind == AttackKind::Bash ||
+        (kind == AttackKind::Power && !settings_.chargePowerAttacks);
+    if (!engineOwnsCost) {
+        cost *= costMultiplier;
     }
 
     auto& state = actors_[actor];
@@ -161,7 +172,7 @@ AttackResult CombatRules::beginAttack(ActorId actor, EventToken stage, AttackKin
 
     // Consume a pending perfect-parry counterattack on the next power attack. Only a power
     // attack spends the reward; light attacks leave it armed until the window expires. The
-    // reward is consumed here, before affordability, so a free power attack always admits.
+    // reward bypasses the exhaustion gate, including when the actor has zero stamina.
     bool freeCounterattack = false;
     if (kind == AttackKind::Power && settings_.counterattackEnabled && state.counterattackArmed) {
         if (now <= state.counterattackUntil) {
@@ -172,9 +183,9 @@ AttackResult CombatRules::beginAttack(ActorId actor, EventToken stage, AttackKin
     }
 
     result.nominalCost = cost;
-    result.engineOwnsCost = kind == AttackKind::Power && !settings_.chargePowerAttacks;
+    result.engineOwnsCost = engineOwnsCost;
     result.freeCounterattack = freeCounterattack;
-    result.reason = affordabilityFailure(stamina, cost);
+    result.reason = freeCounterattack ? RejectReason::None : affordabilityFailure(stamina, cost);
     if (result.reason != RejectReason::None) {
         rearmFreeCounterattack(state, now, freeCounterattack);
         result.freeCounterattack = false;
@@ -222,13 +233,18 @@ AttackResult CombatRules::commitAttack(ActorId actor, EventToken stage,
         rearmFreeCounterattack(state, now, state.freeCounterattack);
         return result;
     }
-    result.reason = affordabilityFailure(stamina, state.stageCost);
+    // Engine-owned attacks passed admission before the engine spent their stamina.
+    // A later zero balance is not evidence that this already-admitted strike was unpaid.
+    // Apex-owned costs are still rechecked immediately before their debit.
+    result.reason = state.engineOwnsCost || state.freeCounterattack ?
+        RejectReason::None : affordabilityFailure(stamina, state.stageCost);
     if (result.reason != RejectReason::None) {
         rearmFreeCounterattack(state, now, state.freeCounterattack);
         return result;
     }
     result.accepted = true;
-    result.staminaDebit = state.engineOwnsCost ? 0.0F : std::min(stamina, state.stageCost);
+    result.staminaDebit = state.engineOwnsCost || state.freeCounterattack ?
+        0.0F : std::min(stamina, state.stageCost);
     result.exhausted = updateStamina(state, stamina - result.staminaDebit).exhausted;
     state.freeCounterattack = false;
     return result;

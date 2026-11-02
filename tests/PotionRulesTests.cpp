@@ -2,6 +2,7 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <source_location>
 
 using namespace Apex::Core;
@@ -56,6 +57,10 @@ void edgeInputsYieldNothing()
     const PotionSettings settings;
     check(near(discountFor(settings, 0.0F).percent, 0.0F));
     check(near(discountFor(settings, -25.0F).percent, 0.0F));
+    check(tierIndexForMagnitude(std::numeric_limits<float>::infinity()) == kTierNone);
+    check(tierIndexForMagnitude(std::numeric_limits<float>::quiet_NaN()) == kTierNone);
+    check(near(costMultiplier(std::numeric_limits<float>::quiet_NaN()), 1.0F));
+    check(near(costMultiplier(std::numeric_limits<float>::infinity()), 1.0F));
     // Disabled watcher yields nothing regardless of magnitude.
     PotionSettings off;
     off.enabled = false;
@@ -75,6 +80,39 @@ void customPercentsAndDurationsFlow()
     check(near(ultimate.percent, 90.0F) && ultimate.seconds == 15);
 }
 
+void tierIndexMappingMatchesMagnitudeMapping()
+{
+    check(tierIndexForMagnitude(0.0F) == kTierNone);
+    check(tierIndexForMagnitude(24.9F) == kTierNone);
+    check(tierIndexForMagnitude(25.0F) == kTierIndexMinor);
+    check(tierIndexForMagnitude(60.0F) == kTierIndexStandard);
+    check(tierIndexForMagnitude(9999.0F) == kTierIndexUltimate);
+    check(tierIndexForMagnitude(100000.0F) == kTierIndexUltimate);
+}
+
+void keywordTierDiscountsMatchMagnitudeDiscounts()
+{
+    const PotionSettings settings;
+    // Every keyword tier must produce the same values the magnitude path
+    // produces for that tier's vanilla threshold potion.
+    const float thresholds[] = {kTierMinor, kTierStandard, kTierPlentiful,
+                               kTierVigorous, kTierExtreme, kTierUltimate};
+    const int indices[] = {kTierIndexMinor, kTierIndexStandard, kTierIndexPlentiful,
+                           kTierIndexVigorous, kTierIndexExtreme, kTierIndexUltimate};
+    for (int i = 0; i < 6; ++i) {
+        const auto byMagnitude = discountFor(settings, thresholds[i]);
+        const auto byKeyword = discountForTier(settings, indices[i]);
+        check(near(byMagnitude.percent, byKeyword.percent));
+        check(byMagnitude.seconds == byKeyword.seconds);
+    }
+    check(near(discountForTier(settings, kTierNone).percent, 0.0F));
+    check(near(discountForTier(settings, 99).percent, 0.0F));
+    // Disabled watcher yields nothing via the keyword path too.
+    PotionSettings off;
+    off.enabled = false;
+    check(near(discountForTier(off, kTierIndexUltimate).percent, 0.0F));
+}
+
 void costMultiplierBounds()
 {
     check(near(costMultiplier(0.0F), 1.0F));
@@ -91,6 +129,8 @@ int main()
     moddedPotionsFloorToNearestTier();
     edgeInputsYieldNothing();
     customPercentsAndDurationsFlow();
+    tierIndexMappingMatchesMagnitudeMapping();
+    keywordTierDiscountsMatchMagnitudeDiscounts();
     costMultiplierBounds();
     std::cout << "potion tests passed (" << checks << " checks)\n";
     return 0;

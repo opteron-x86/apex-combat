@@ -27,9 +27,9 @@ struct AiSettings {
     // Chance of a bash against a passive target. Default 0: no unpunishable
     // openers against a player who is just standing there.
     float bashProactiveChance{0.0F};
-    // Stamina a bash costs the basher (NPC and player alike). Admission
-    // requires the full cost; the debit rides the existing attack-commit path.
-    float bashStaminaCost{25.0F};
+    // Deprecated configuration compatibility field. Native Skyrim owns bash
+    // stamina costs; a nonzero legacy value is ignored by the runtime.
+    float bashStaminaCost{0.0F};
     // A circling shield NPC that has seen no opening for this long commits
     // anyway, so turtles cannot stall a fight forever.
     TimeMs maxCircleMs{10000};
@@ -83,6 +83,9 @@ public:
     // original expiry (slots rotate, they do not refresh).
     SlotResult tryAcquire(ActorId target, ActorId attacker, TimeMs now, float windowSample);
     void release(ActorId target, ActorId attacker) noexcept;
+    // Actor left this encounter: clear its slot and retaliation entitlement,
+    // preserving its bash cooldown and all unrelated encounters.
+    void leaveEncounter(ActorId target, ActorId attacker) noexcept;
     // Opens the retaliation window for `attacker` against `target`; call when
     // the target damages a non-holder. No-op while retaliationMs == 0.
     void onTargetDamagedAttacker(ActorId target, ActorId attacker, TimeMs now);
@@ -117,6 +120,7 @@ public:
 
     // --- Housekeeping -------------------------------------------------------
 
+    // Removes the actor as both a target and a participant.
     void resetActor(ActorId actor) noexcept;
     void resetSession() noexcept;
     std::size_t targetCount() const noexcept;

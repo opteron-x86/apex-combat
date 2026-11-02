@@ -102,6 +102,15 @@ void AiRules::release(ActorId target, ActorId attacker) noexcept {
     it->second.holders.erase(attacker);
 }
 
+void AiRules::leaveEncounter(ActorId target, ActorId attacker) noexcept {
+    const auto found = targets_.find(target);
+    if (found == targets_.end()) return;
+    found->second.holders.erase(attacker);
+    found->second.retaliationUntil.erase(attacker);
+    if (found->second.holders.empty() && found->second.retaliationUntil.empty())
+        targets_.erase(found);
+}
+
 void AiRules::onTargetDamagedAttacker(ActorId target, ActorId attacker, TimeMs now) {
     if (target == 0 || attacker == 0 || settings_.retaliationMs == 0) {
         return;
@@ -190,9 +199,14 @@ bool AiRules::isOpening(bool targetRecovering, bool targetStaggered, bool target
 
 void AiRules::resetActor(ActorId actor) noexcept {
     lastBash_.erase(actor);
-    for (auto& [target, state] : targets_) {
-        state.holders.erase(actor);
-        state.retaliationUntil.erase(actor);
+    targets_.erase(actor);
+    for (auto it = targets_.begin(); it != targets_.end();) {
+        it->second.holders.erase(actor);
+        it->second.retaliationUntil.erase(actor);
+        if (it->second.holders.empty() && it->second.retaliationUntil.empty())
+            it = targets_.erase(it);
+        else
+            ++it;
     }
 }
 

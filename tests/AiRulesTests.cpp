@@ -243,6 +243,51 @@ void resetActorClearsOnlyThatActor()
     check(rules.admitBash(kA, 0).allowed);
 }
 
+void leavingEncounterPreservesIndependentState()
+{
+    AiRules rules;
+    const ActorId otherTarget = 0x900;
+    check(rules.admitBash(kA, 0).allowed);
+    check(rules.tryAcquire(kTarget, kA, 0, 0.5F).granted);
+    rules.onTargetDamagedAttacker(kTarget, kA, 0);
+    check(rules.tryAcquire(otherTarget, kB, 0, 0.5F).granted);
+    rules.onTargetDamagedAttacker(otherTarget, kB, 0);
+    rules.leaveEncounter(kTarget, kA);
+    check(rules.targetCount() == 1);
+    check(rules.holderCount(kTarget, 0) == 0);
+    check(!rules.retaliationActive(kTarget, kA, 0));
+    check(rules.bashCooldownRemaining(kA, 0) > 0);
+    check(rules.holdsSlot(otherTarget, kB, 0));
+    check(rules.retaliationActive(otherTarget, kB, 0));
+    rules.leaveEncounter(kTarget, kA);  // Idempotent after unload/switch.
+    check(rules.targetCount() == 1);
+}
+
+void targetUnloadRemovesEncounterAndParticipantReferences()
+{
+    AiRules rules;
+    const ActorId otherTarget = 0x900;
+    check(rules.tryAcquire(kTarget, kA, 0, 0.5F).granted);
+    rules.onTargetDamagedAttacker(kTarget, kB, 0);
+    // The removed target also participates in another actor's encounter.
+    check(rules.tryAcquire(otherTarget, kTarget, 0, 0.5F).granted);
+    rules.onTargetDamagedAttacker(otherTarget, kTarget, 0);
+    rules.onTargetDamagedAttacker(otherTarget, kB, 0);
+    check(rules.admitBash(kTarget, 0).allowed);
+    check(rules.admitBash(kB, 0).allowed);
+    rules.resetActor(kTarget);
+    check(rules.targetCount() == 1);
+    check(rules.holderCount(kTarget, 0) == 0);
+    check(!rules.retaliationActive(kTarget, kB, 0));
+    check(!rules.holdsSlot(otherTarget, kTarget, 0));
+    check(!rules.retaliationActive(otherTarget, kTarget, 0));
+    check(rules.retaliationActive(otherTarget, kB, 0));
+    check(rules.bashCooldownRemaining(kTarget, 0) == 0);
+    check(rules.bashCooldownRemaining(kB, 0) > 0);
+    rules.resetActor(kB);
+    check(rules.targetCount() == 0);
+}
+
 void resetSessionClearsEverything()
 {
     AiRules rules;
@@ -314,6 +359,8 @@ int main()
     bashRollsRespectChances();
     turtleOpenings();
     resetActorClearsOnlyThatActor();
+    leavingEncounterPreservesIndependentState();
+    targetUnloadRemovesEncounterAndParticipantReferences();
     resetSessionClearsEverything();
     setSettingsValidatesAndClears();
     std::cout << checks << " checks passed\n";

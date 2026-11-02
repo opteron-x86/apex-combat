@@ -16,8 +16,7 @@ struct Configuration {
     Core::Settings rules;
     Core::PoiseSettings poiseSettings;
     Core::AiSettings aiSettings;
-    // Combat director (attack slots, bash discipline, circling). Staged
-    // migration: off in code and the shipped INI until validated in game.
+    // Combat director defaults off when no configuration is present.
     bool director{false};
     // Limits slot pacing to NPCs targeting the player; NPC-vs-NPC stays vanilla.
     bool directorPlayerOnly{true};
@@ -57,10 +56,10 @@ struct Configuration {
     // Player-only multiplier on the vanilla stamina regen rate, applied via
     // the StaminaRateMult actor value: 1 is vanilla, 1.5 is 50% faster.
     float staminaRegenMult{1.5F};
-    // Stamina a dodge costs the player. Apex owns dodge costing; set any
-    // dodge-framework stamina cost to zero so it is not charged twice.
-    float dodgeStaminaCost{20.0F};
-    // Stamina-potion cost discount (timed, no refresh on a second potion).
+    // Optional charge on dodge animation events. Disabled by default so the
+    // dodge framework retains its own admission checks and stamina cost.
+    float dodgeStaminaCost{0.0F};
+    // Stamina-potion cost discount; each new dose replaces the current buff.
     Core::PotionSettings potionSettings;
     bool trace{false};
     bool patchAttackIdles{true};

@@ -265,7 +265,7 @@ void directorConfiguration()
     check(defaults.config.aiSettings.bashCooldownMs == 6000);
     near(defaults.config.aiSettings.bashReactionChance, 0.35F);
     near(defaults.config.aiSettings.bashProactiveChance, 0.0F);
-    near(defaults.config.aiSettings.bashStaminaCost, 25);
+    near(defaults.config.aiSettings.bashStaminaCost, 0);
     check(defaults.config.aiSettings.maxCircleMs == 10000);
     near(defaults.config.circleRadiusMin, 200);
     near(defaults.config.circleRadiusMax, 320);
@@ -349,7 +349,7 @@ circleRadiusMax=2001
     check(invalid.config.aiSettings.bashCooldownMs == 6000);
     near(invalid.config.aiSettings.bashReactionChance, 0.35F);
     near(invalid.config.aiSettings.bashProactiveChance, 0.0F);
-    near(invalid.config.aiSettings.bashStaminaCost, 25);
+    near(invalid.config.aiSettings.bashStaminaCost, 0);
     check(invalid.config.aiSettings.maxCircleMs == 10000);
     near(invalid.config.circleRadiusMin, 200);
     near(invalid.config.circleRadiusMax, 320);
@@ -359,7 +359,7 @@ void potionAndRegenConfiguration()
 {
     const auto defaults = parseConfiguration("");
     near(defaults.config.staminaRegenMult, 1.5F);
-    near(defaults.config.dodgeStaminaCost, 20);
+    near(defaults.config.dodgeStaminaCost, 0);
     check(defaults.config.potionSettings.enabled);
     near(defaults.config.potionSettings.discountMinor, 10);
     near(defaults.config.potionSettings.discountStandard, 20);
@@ -414,7 +414,7 @@ ultimateSeconds=3601
 )ini");
     check(invalid.diagnostics.size() == 10);
     near(invalid.config.staminaRegenMult, 1.5F);
-    near(invalid.config.dodgeStaminaCost, 20);
+    near(invalid.config.dodgeStaminaCost, 0);
     near(invalid.config.potionSettings.discountMinor, 10);
     near(invalid.config.potionSettings.discountStandard, 20);
     near(invalid.config.potionSettings.discountPlentiful, 30);

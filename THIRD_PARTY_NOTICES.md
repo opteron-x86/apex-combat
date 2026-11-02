@@ -5,7 +5,7 @@ Apex Combat statically incorporates or links the following third-party software.
 ## CommonLibSSE-NG
 
 Source: https://github.com/alandtse/CommonLibSSE-NG (pinned commit, recorded in `CMakeLists.txt` and `build-info.json`).
-License: MIT; see `licenses/CommonLib-LICENSE.txt`. OpenVR headers under `extern/openvr` are distributed under their own license; see `licenses/OpenVR.txt`.
+License: GPL-3.0-or-later with the Modding Exception and GPL-3.0 Linking Exception (with Corresponding Source); see `licenses/CommonLib-COPYING.txt` and `licenses/CommonLib-EXCEPTIONS.md`. The original MIT attribution is retained in `licenses/CommonLib-LICENSE-MIT.txt`; it is not the license of the current project as a whole. The bundled hde64 code uses BSD 2-Clause terms in `licenses/CommonLib-LICENSE-hde64.txt`. OpenVR headers use BSD 3-Clause terms in `licenses/OpenVR.txt`.
 
 ## Precision API headers
 
@@ -25,7 +25,7 @@ The `third_party/truehud/TrueHUDAPI.h` file is the TrueHUD modding API header, d
 
 Built from the versions pinned in `vcpkg.json`; license texts are included per dependency:
 
-- `licenses/fmt.txt` — {fmt}, MIT with fmt exception.
+- `licenses/fmt.txt` — {fmt}, MIT.
 - `licenses/spdlog.txt` — spdlog, MIT.
 - `licenses/directxmath.txt` — DirectXMath, MIT.
 - `licenses/directxtk.txt` — DirectXTK for DirectX 11, MIT.

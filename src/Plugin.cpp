@@ -28,7 +28,7 @@ extern "C" __declspec(dllexport) constinit auto SKSEPlugin_Version = []() noexce
     SKSE::PluginVersionData data{};
     data.PluginName("ApexCombat");
     data.AuthorName("Apex Combat contributors");
-    data.PluginVersion(REL::Version(0, 1, 0, 0));
+    data.PluginVersion(REL::Version(APEX_VERSION_MAJOR, APEX_VERSION_MINOR, APEX_VERSION_PATCH, 0));
     data.UsesAddressLibrary();
     data.UsesNoStructs();
     return data;
@@ -58,7 +58,7 @@ extern "C" __declspec(dllexport) bool SKSEPlugin_Load(const SKSE::LoadInterface*
         SKSE::InitInfo init;
         init.log = false;
         SKSE::Init(skse, init);
-        SKSE::log::info("Apex Combat 0.1.0; Skyrim {}; CommonLibSSE-NG", skse->RuntimeVersion().string());
+        SKSE::log::info("Apex Combat {}; Skyrim {}; CommonLibSSE-NG", APEX_VERSION, skse->RuntimeVersion().string());
         auto* messaging = SKSE::GetMessagingInterface();
         auto* serialization = SKSE::GetSerializationInterface();
         if (!messaging || !serialization || !SKSE::GetTaskInterface()) return false;

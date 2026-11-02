@@ -125,6 +125,95 @@ void powerCostsHaveOneOwner()
     near(owned.staminaDebit, 40);
 }
 
+void engineDebitDoesNotInvalidateAdmittedPower()
+{
+    Settings settings;
+    settings.affordability = Affordability::FullCost;
+    CombatRules rules(settings);
+    auto admission = rules.beginAttack(1, 1, AttackKind::Power, 40, 0, 40);
+    check(admission.accepted && admission.engineOwnsCost);
+    auto committed = rules.commitAttack(1, 1, 0, 1);
+    check(committed.accepted && committed.engineOwnsCost && committed.exhausted);
+    near(committed.staminaDebit, 0);
+    check(!rules.commitAttack(1, 1, 0, 2).accepted);
+    auto next = rules.beginAttack(1, 2, AttackKind::Power, 0, 3, 40);
+    check(!next.accepted && next.reason == RejectReason::NoStamina);
+
+    // Partial native debits must not fail a second full-cost check either.
+    check(rules.beginAttack(2, 1, AttackKind::Power, 50, 0, 40).accepted);
+    auto partial = rules.commitAttack(2, 1, 10, 1);
+    check(partial.accepted);
+    near(partial.staminaDebit, 0);
+
+    check(rules.grantCounterattack(3, 0));
+    check(rules.beginAttack(3, 1, AttackKind::Power, 20, 1, 40).freeCounterattack);
+    auto rewarded = rules.commitAttack(3, 1, 0, 2);
+    check(rewarded.accepted && rewarded.freeCounterattack);
+    near(rewarded.staminaDebit, 0);
+
+    // Cancellation and expiry never become successful just because the engine owns costs.
+    check(rules.beginAttack(4, 1, AttackKind::Power, 40, 0, 40).accepted);
+    check(rules.cancelAttack(4, 1, 1));
+    check(!rules.commitAttack(4, 1, 0, 2).accepted);
+    check(rules.beginAttack(5, 1, AttackKind::Power, 40, 0, 40).accepted);
+    check(rules.commitAttack(5, 1, 0, 1001).reason == RejectReason::StageExpired);
+
+    settings.chargePowerAttacks = true;
+    rules.setSettings(settings);
+    check(rules.beginAttack(1, 1, AttackKind::Power, 40, 0, 40).accepted);
+    auto apexOwned = rules.commitAttack(1, 1, 0, 1);
+    check(!apexOwned.accepted && apexOwned.reason == RejectReason::NoStamina);
+}
+
+void discountedCostsUseTheSameAdmissionAndDebit()
+{
+    Settings settings;
+    settings.affordability = Affordability::FullCost;
+    CombatRules rules(settings);
+    auto admitted = rules.beginAttack(1, 1, AttackKind::LightOneHanded, 15, 0, 0, 0, 0.5F);
+    check(admitted.accepted);
+    near(admitted.nominalCost, 10);
+    auto duplicate = rules.beginAttack(1, 1, AttackKind::LightOneHanded, 15, 1, 0, 0, 1);
+    check(duplicate.accepted && duplicate.duplicate);
+    near(duplicate.nominalCost, 10);  // A buff expiring during windup does not change this stage.
+    auto committed = rules.commitAttack(1, 1, 15, 2);
+    near(committed.staminaDebit, 10);
+    check(!rules.beginAttack(2, 1, AttackKind::LightOneHanded, 9, 0, 0, 0, 0.5F).accepted);
+    check(rules.beginAttack(3, 1, AttackKind::DualWield, 12, 0, 0, 24, 0.5F).accepted);
+    near(rules.commitAttack(3, 1, 12, 1).staminaDebit, 12);
+
+    // A potion cannot lower the admission cost of a power attack charged by the engine.
+    check(!rules.beginAttack(4, 1, AttackKind::Power, 20, 0, 40, 0, 0.5F).accepted);
+    auto native = rules.beginAttack(4, 2, AttackKind::Power, 40, 1, 40, 0, 0.5F);
+    check(native.accepted && native.engineOwnsCost);
+    near(native.nominalCost, 40);
+    near(rules.commitAttack(4, 2, 0, 2).staminaDebit, 0);
+
+    settings.chargePowerAttacks = true;
+    rules.setSettings(settings);
+    auto owned = rules.beginAttack(1, 1, AttackKind::Power, 20, 0, 40, 0, 0.5F);
+    check(owned.accepted && !owned.engineOwnsCost);
+    near(rules.commitAttack(1, 1, 20, 1).staminaDebit, 20);
+
+    settings.affordability = Affordability::PositiveStamina;
+    rules.setSettings(settings);
+    check(rules.beginAttack(1, 1, AttackKind::LightOneHanded, 1, 0, 0, 0, 0.5F).accepted);
+    auto empty = rules.commitAttack(1, 1, 1, 1);
+    near(empty.staminaDebit, 1);  // Discount before clamping; no fractional balance survives.
+    check(empty.exhausted);
+    check(!rules.beginAttack(1, 2, AttackKind::LightOneHanded, 0, 2, 0, 0, 0.5F).accepted);
+    check(rules.beginAttack(2, 1, AttackKind::Unarmed, 1, 0, 0, 0, 0).accepted);
+    near(rules.commitAttack(2, 1, 1, 1).staminaDebit, 0);
+    check(!rules.beginAttack(3, 1, AttackKind::Unarmed, 0, 0, 0, 0, 0).accepted);
+
+    for (float invalid : {-0.1F, 1.1F, std::numeric_limits<float>::infinity(),
+                          std::numeric_limits<float>::quiet_NaN()}) {
+        auto rejected = rules.beginAttack(9, 1, AttackKind::LightOneHanded, 100, 10, 0, 0, invalid);
+        check(!rejected.accepted && rejected.reason == RejectReason::InvalidInput);
+    }
+    check(rules.beginAttack(9, 1, AttackKind::LightOneHanded, 100, 11).accepted);
+}
+
 void cancelledExpiredAndSupersededStages()
 {
     CombatRules rules;
@@ -371,13 +460,25 @@ void counterattackWindowExpiryAndDenial()
     auto boundary = rules.beginAttack(1, 2, AttackKind::Power, 100, 3200 + 1500, 40);
     check(boundary.accepted && boundary.freeCounterattack);
 
-    // A rejected power attack re-arms the reward; the retry consumes it again.
+    // An earned counterattack is available even when the defender is exhausted.
     check(rules.grantCounterattack(2, 0));
-    auto denied = rules.beginAttack(2, 1, AttackKind::Power, 0, 10, 40);
-    check(!denied.accepted && denied.reason == RejectReason::NoStamina && !denied.freeCounterattack);
-    check(rules.counterattackReady(2, 11));
-    auto retry = rules.beginAttack(2, 2, AttackKind::Power, 50, 12, 40);
-    check(retry.accepted && retry.freeCounterattack);  // Reward re-armed by the denial.
+    auto exhausted = rules.beginAttack(2, 1, AttackKind::Power, 0, 10, 40);
+    check(exhausted.accepted && exhausted.freeCounterattack && exhausted.exhausted);
+    check(!rules.counterattackReady(2, 11));
+    auto rewarded = rules.commitAttack(2, 1, 0, 12);
+    check(rewarded.accepted && rewarded.freeCounterattack);
+    near(rewarded.staminaDebit, 0);
+    check(rules.beginAttack(2, 2, AttackKind::Power, 0, 13, 40).reason == RejectReason::NoStamina);
+
+    // Apex-owned free power attacks also bypass exhaustion without a negative debit.
+    Settings ownedSettings;
+    ownedSettings.chargePowerAttacks = true;
+    CombatRules owned(ownedSettings);
+    check(owned.grantCounterattack(1, 0));
+    check(owned.beginAttack(1, 1, AttackKind::Power, -5, 1, 40).accepted);
+    auto freeOwned = owned.commitAttack(1, 1, -5, 2);
+    check(freeOwned.accepted && freeOwned.freeCounterattack && freeOwned.exhausted);
+    near(freeOwned.staminaDebit, 0);
 
     // Disabled: grants are refused and no reward is ever armed.
     Settings settings;
@@ -447,6 +548,44 @@ void counterattackRewardSurvivesRetries()
 
 // counterattackActive tracks the open window itself: it stays true after the
 // reward is spent (so the poise bonus still applies) and turns false at expiry.
+void nativeBashesKeepCostsAndRewardsSeparate()
+{
+    Settings settings;
+    settings.affordability = Affordability::FullCost;
+    settings.chargePowerAttacks = true;
+    CombatRules rules(settings);
+    // Even with Apex-owned power costs enabled, bashes remain engine-owned.
+    auto bash = rules.beginAttack(1, 1, AttackKind::Bash, 1, 0, 0, 0, 0);
+    check(bash.accepted && bash.engineOwnsCost && !bash.freeCounterattack);
+    near(bash.nominalCost, 0);
+    // Native spending between request and commit cannot invalidate admission.
+    auto landed = rules.commitAttack(1, 1, 0, 1);
+    check(landed.accepted && landed.engineOwnsCost && landed.exhausted);
+    near(landed.staminaDebit, 0);
+    auto duplicate = rules.commitAttack(1, 1, 0, 2);
+    check(!duplicate.accepted && duplicate.duplicate);
+    near(duplicate.staminaDebit, 0);
+
+    check(rules.grantCounterattack(2, 0));
+    // A free power reward never makes a zero-stamina bash eligible.
+    auto empty = rules.beginAttack(2, 1, AttackKind::Bash, 0, 1);
+    check(!empty.accepted && empty.reason == RejectReason::NoStamina);
+    check(rules.counterattackReady(2, 2));
+    auto funded = rules.beginAttack(2, 2, AttackKind::Bash, 30, 3);
+    check(funded.accepted && !funded.freeCounterattack);
+    check(rules.commitAttack(2, 2, 0, 4).accepted);
+    check(rules.counterattackReady(2, 5));
+    auto power = rules.beginAttack(2, 3, AttackKind::Power, 0, 6, 40);
+    check(power.accepted && power.freeCounterattack);
+
+    // A failed dispatch can cancel the real bash stage before a fresh attack.
+    check(rules.beginAttack(3, 1, AttackKind::Bash, 50, 0).accepted);
+    check(rules.cancelAttack(3, 1, 1));
+    check(!rules.commitAttack(3, 1, 50, 2).accepted);
+    check(rules.beginAttack(3, 2, AttackKind::LightOneHanded, 50, 3).accepted);
+    near(rules.commitAttack(3, 2, 50, 4).staminaDebit, settings.lightOneHandedCost);
+}
+
 void counterattackActiveTracksOpenWindow()
 {
     CombatRules rules;
@@ -479,6 +618,8 @@ int main()
     positiveStaminaAndParryRecovery();
     strictAffordabilityRechecksAtCommit();
     powerCostsHaveOneOwner();
+    engineDebitDoesNotInvalidateAdmittedPower();
+    discountedCostsUseTheSameAdmissionAndDebit();
     cancelledExpiredAndSupersededStages();
     blockTimingAndSingleConsumption();
     blockSpamAndRelease();
@@ -490,5 +631,6 @@ int main()
     counterattackWindowExpiryAndDenial();
     counterattackRewardSurvivesRetries();
     counterattackActiveTracksOpenWindow();
+    nativeBashesKeepCostsAndRewardsSeparate();
     std::cout << "Combat rules: " << checks << " checks passed\n";
 }

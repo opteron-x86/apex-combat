@@ -8,6 +8,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: tools/build.sh native-tests
+  potion-patcher:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - run: dotnet restore tools/PotionPatcher --locked-mode
+      - run: dotnet run --project tools/PotionPatcher --no-restore -- --self-test
   windows:
     runs-on: windows-latest
     steps:

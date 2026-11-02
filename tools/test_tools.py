@@ -89,6 +89,14 @@ class DeploymentTests(unittest.TestCase):
             with zipfile.ZipFile(path, 'w') as archive: archive.writestr('../outside.txt', b'bad')
             with self.assertRaisesRegex(ValueError, 'Unsafe'): deploy.package_files(path)
 
+    def test_source_archive_preserves_executable_tools(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / 'source.zip'
+            package.write_zip(path, {'tools/build.sh': b'#!/bin/sh\n', 'README.md': b'Usage'}, executable_names={'tools/build.sh'})
+            with zipfile.ZipFile(path) as archive:
+                self.assertEqual((archive.getinfo('tools/build.sh').external_attr >> 16) & 0o777, 0o755)
+                self.assertEqual((archive.getinfo('README.md').external_attr >> 16) & 0o777, 0o644)
+
     def test_archive_is_deterministic(self):
         with tempfile.TemporaryDirectory() as temporary:
             one, two = Path(temporary) / 'one.zip', Path(temporary) / 'two.zip'

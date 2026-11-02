@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.28)
-project(ApexCombat VERSION 0.1.0 LANGUAGES C CXX)
+project(ApexCombat VERSION 0.4.2 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -77,6 +77,33 @@ if(APEX_BUILD_PLUGIN)
     target_compile_options(ApexCombat PRIVATE /EHsc /utf-8 /W4 /Zi)
     target_link_options(ApexCombat PRIVATE /DEBUG:FULL /Brepro /PDBALTPATH:ApexCombat.pdb)
     set_target_properties(ApexCombat PROPERTIES PREFIX "" OUTPUT_NAME ApexCombat)
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    file(GLOB_RECURSE APEX_PROVENANCE_INPUTS CONFIGURE_DEPENDS
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/*.c" "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/*.h" "${CMAKE_CURRENT_SOURCE_DIR}/src/*.hpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/*.inl"
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/*.c" "${CMAKE_CURRENT_SOURCE_DIR}/third_party/*.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/*.h" "${CMAKE_CURRENT_SOURCE_DIR}/third_party/*.hpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/third_party/*.inl"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/cmake/*.cmake")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+        ${APEX_PROVENANCE_INPUTS} CMakePresets.json vcpkg.json tools/build_provenance.py)
+    execute_process(COMMAND "${Python3_EXECUTABLE}"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tools/build_provenance.py" snapshot
+        --root "${CMAKE_CURRENT_SOURCE_DIR}"
+        --output "${CMAKE_CURRENT_BINARY_DIR}/build-inputs.json"
+        COMMAND_ERROR_IS_FATAL ANY)
+    set_property(TARGET ApexCombat APPEND PROPERTY LINK_DEPENDS
+        "${CMAKE_CURRENT_BINARY_DIR}/build-inputs.json")
+    add_custom_command(TARGET ApexCombat POST_BUILD
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/build_provenance.py" record
+        --root "${CMAKE_CURRENT_SOURCE_DIR}"
+        --snapshot "${CMAKE_CURRENT_BINARY_DIR}/build-inputs.json"
+        --dll "$<TARGET_FILE:ApexCombat>" --pdb "$<TARGET_PDB_FILE:ApexCombat>"
+        --cache "${CMAKE_CURRENT_BINARY_DIR}/CMakeCache.txt"
+        --output "${CMAKE_CURRENT_BINARY_DIR}/build-provenance.json"
+        VERBATIM)
+
     install(TARGETS ApexCombat RUNTIME DESTINATION SKSE/Plugins LIBRARY DESTINATION SKSE/Plugins)
     install(DIRECTORY package/ DESTINATION .)
 endif()

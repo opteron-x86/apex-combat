@@ -10,7 +10,7 @@ using ActorId = std::uint32_t;
 using EventToken = std::uint64_t;
 using TimeMs = std::int64_t;
 
-enum class AttackKind { LightOneHanded, LightTwoHanded, Unarmed, Power, Dagger, OneHandedAxe, OneHandedMace, DualWield };
+enum class AttackKind { LightOneHanded, LightTwoHanded, Unarmed, Power, Dagger, OneHandedAxe, OneHandedMace, DualWield, Bash };
 enum class Affordability { PositiveStamina, FullCost };
 
 struct Settings {
@@ -96,9 +96,11 @@ public:
     // Validates first, then replaces settings and clears actor state.
     void setSettings(Settings settings);
 
+    // The cost multiplier is captured at admission and applies only to Apex-owned costs.
+    // It must be finite and within [0, 1]; the returned debit is already discounted.
     AttackResult beginAttack(ActorId actor, EventToken stage, AttackKind kind,
                              float stamina, TimeMs now, float vanillaPowerCost = 0.0F,
-                             float customCost = 0.0F);
+                             float customCost = 0.0F, float costMultiplier = 1.0F);
     AttackResult commitAttack(ActorId actor, EventToken stage, float stamina, TimeMs now);
     // Cancellation invalidates a pending stage. Committed attacks are never refunded.
     bool cancelAttack(ActorId actor, EventToken stage, TimeMs now);
