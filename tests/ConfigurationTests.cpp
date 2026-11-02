@@ -147,6 +147,26 @@ trace=true
     check(validated.settings().counterattackWindowMs == 900);
 }
 
+void parryVisualConfiguration()
+{
+    const auto defaults = parseConfiguration("");
+    near(defaults.config.parryVisualScale, 1.0F);
+    check(defaults.config.parryVisualRings);
+    const auto custom = parseConfiguration("[PerfectBlock]\nparryVisualScale=1.5\nparryVisualRings=false\n");
+    check(custom.diagnostics.empty());
+    near(custom.config.parryVisualScale, 1.5F);
+    check(!custom.config.parryVisualRings && custom.config.parryVisual);
+    for (const auto* value : {"0.25", "3"}) {
+        const auto parsed = parseConfiguration(std::string("[PerfectBlock]\nparryVisualScale=") + value);
+        check(parsed.diagnostics.empty());
+    }
+    for (const auto* value : {"0", "0.249", "3.01", "nan", "inf", "1.2junk"}) {
+        const auto parsed = parseConfiguration(std::string("[PerfectBlock]\nparryVisualScale=") + value);
+        check(parsed.diagnostics.size() == 1);
+        near(parsed.config.parryVisualScale, 1.0F);
+    }
+}
+
 void poiseConfiguration()
 {
     const auto defaults = parseConfiguration("");
@@ -618,6 +638,7 @@ void invalidFilesAndSizeLimits()
 int main(int argc, char** argv)
 {
     defaultsAndCompleteConfiguration();
+    parryVisualConfiguration();
     poiseConfiguration();
     directorConfiguration();
     potionAndRegenConfiguration();

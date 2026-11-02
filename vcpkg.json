@@ -1,6 +1,6 @@
 {
   "name": "apex-combat",
-  "version-semver": "0.4.2",
+  "version-semver": "0.4.4",
   "builtin-baseline": "ee12231b20c95013c6638d845d04c91559a1d1ff",
   "dependencies": ["directxmath", "directxtk", "fmt", "rapidcsv", "spdlog"]
 }

@@ -44,10 +44,10 @@ struct Configuration {
     std::string parrySoundShield{"ApexCombat.esp|0x801"};
     // Scales the parry clang volume: 0..2, where 1 is the descriptor level.
     float parrySoundVolume{1.0F};
-    // Parry spark VFX: attaches the vanilla metal-spark impact root at the
-    // blocking weapon/shield node so the engine fires its own spark. Independent
-    // of the clang.
+    // Perfect-parry flash, sparks, and optional ring at the collision point.
     bool parryVisual{true};
+    float parryVisualScale{1.0F};
+    bool parryVisualRings{true};
     float blockAngleDegrees{120.0F};
     float regenDelaySeconds{0.5F};
     float dodgeRegenDelaySeconds{0.5F};

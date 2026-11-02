@@ -8,7 +8,8 @@ namespace Apex::Core {
 
 // Stamina-potion discount settings: a drunk Restore Stamina potion grants a
 // timed percentage reduction of Apex-owned stamina costs and sprint drain.
-// Engine-owned power attacks and bashes retain their native costs.
+// Power attacks receive the same modifier through their native cost calculation.
+// Bashes retain their native costs.
 struct PotionSettings {
     // Master switch for the potion discount watcher.
     bool enabled{true};

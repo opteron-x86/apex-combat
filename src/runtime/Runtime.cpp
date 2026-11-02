@@ -5,6 +5,7 @@
 #include "Runtime.h"
 #include "core/AiRules.h"
 #include "core/CombatRules.h"
+#include "core/NativePowerCost.h"
 #include "core/Configuration.h"
 #include "core/ParryContacts.h"
 #include "core/PoiseRules.h"
@@ -16,6 +17,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <mutex>
 #include <random>
 #include <string>
@@ -51,10 +53,7 @@ struct ActorState {
     bool denied{false};
     bool nextStage{true};
     bool exhausted{false};
-    bool freePowerPending{false};
-    float freePowerBaseline{0.0F};
-    EventToken freePowerStage{0};
-    TimeMs freePowerDeadline{0};
+    Core::NativePowerReservation nativeCounter;
     TimeMs lastSeen{0};
     // Director: a recorded bash whose commit never landed must be cancelled
     // (rejected/superseded begin), restoring the cooldown. bashStage is the
@@ -159,6 +158,104 @@ float ActiveCostMultiplier(RE::Actor* actor, TimeMs) {
     return Core::costMultiplier(found->second.potionPercent);
 }
 
+// The record is a private cost template, never an actor perk. Appending its
+// real entry preserves the engine calculation and other mods' existing hooks.
+RE::BGSEntryPointPerkEntry* nativePowerEntry{nullptr};
+RE::BGSEntryPointFunctionDataOneValue* nativePowerValue{nullptr};
+std::recursive_mutex nativePowerEntryMutex;
+bool nativePowerReady{false};
+
+bool ResolveNativePowerCost() {
+    auto* data = RE::TESDataHandler::GetSingleton();
+    auto* perk = data ? data->LookupForm<RE::BGSPerk>(0x802, "ApexCombat.esp") : nullptr;
+    if (!perk || perk->perkEntries.size() != 1 || perk->perkConditions.head ||
+        perk->data.numRanks != 1 || !perk->data.hidden || perk->data.playable) return false;
+    const char* id = perk->GetFormEditorID();
+    if (id && *id && std::string_view(id) != "ApexPowerAttackCost") return false;
+    auto* rawEntry = perk->perkEntries[0];
+    if (!rawEntry || rawEntry->GetType() != RE::PERK_ENTRY_TYPE::kEntryPoint) return false;
+    auto* entry = static_cast<RE::BGSEntryPointPerkEntry*>(rawEntry);
+    using Function = RE::BGSEntryPointFunction::ENTRY_POINT_FUNCTION;
+    if (entry->entryData.entryPoint != RE::BGSEntryPoint::ENTRY_POINT::kModPowerAttackStamina ||
+        entry->entryData.function != Function::kMultiplyValue || entry->entryData.numArgs != 2 ||
+        entry->header.rank != 0 || entry->perk != perk || entry->conditions.size() > 2 ||
+        static_cast<std::uint32_t>(entry->GetFunction()) != static_cast<std::uint32_t>(Function::kMultiplyValue))
+        return false;
+    for (const auto& condition : entry->conditions) if (condition.head) return false;
+    auto* value = entry->functionData;
+    if (!value || value->GetType() != RE::BGSEntryPointFunctionData::ENTRY_POINT_FUNCTION_DATA::kOneValue ||
+        entry->GetFunctionData() != value) return false;
+    auto* one = static_cast<RE::BGSEntryPointFunctionDataOneValue*>(value);
+    if (!std::isfinite(one->data) || one->data != 1.0F) return false;
+    nativePowerEntry = entry;
+    nativePowerValue = one;
+    return true;
+}
+
+// Caller holds stateMutex. Engine effect walking is deliberately absent here:
+// cost queries use the same copied potion snapshot as other combat callbacks.
+float NativePowerMultiplier(const RE::Actor* actor, TimeMs now) {
+    if (!nativePowerReady || !active.load() || !actor) return 1.0F;
+    const auto found = actors.find(actor->GetFormID());
+    if (found == actors.end()) return 1.0F;
+    const auto& state = found->second;
+    const float potion = config.potionSettings.enabled && state.potionActive
+        ? Core::costMultiplier(state.potionPercent) : 1.0F;
+    const bool counter = !state.denied && state.nativeCounter.matches(state.stage, now);
+    return Core::nativePowerMultiplier(potion, counter);
+}
+
+template<bool Player>
+struct NativePowerHooks {
+    using EntryPoint = RE::BGSEntryPoint::ENTRY_POINT;
+    static inline REL::Relocation<bool (*)(const RE::Actor*, EntryPoint)> hasEntries;
+    static inline REL::Relocation<void (*)(const RE::Actor*, EntryPoint, RE::PerkEntryVisitor&)> forEach;
+
+    static bool HasEntries(const RE::Actor* actor, EntryPoint entryPoint) {
+        const bool original = hasEntries(actor, entryPoint);
+        if (original || entryPoint != EntryPoint::kModPowerAttackStamina) return original;
+        std::scoped_lock lock(stateMutex);
+        return NativePowerMultiplier(actor, Now()) < 1.0F;
+    }
+
+    static void ForEach(const RE::Actor* actor, EntryPoint entryPoint, RE::PerkEntryVisitor& visitor) {
+        if (entryPoint != EntryPoint::kModPowerAttackStamina || !nativePowerReady) {
+            forEach(actor, entryPoint, visitor);
+            return;
+        }
+        const Core::NativePowerVisitScope scope(actor, std::addressof(visitor));
+        forEach(actor, entryPoint, visitor);
+        if (scope.reentered()) return;
+        // Only the engine's synchronous cost visitor may receive the temporary
+        // scalar. Generic entry collectors and other visitors see no extra entry.
+        std::uintptr_t visitorTable = 0;
+        std::memcpy(&visitorTable, std::addressof(visitor), sizeof(visitorTable));
+        static const REL::Relocation<std::uintptr_t> expectedTable{RE::VTABLE___HandleEntryPointVisitor[0]};
+        if (visitorTable != expectedTable.address()) return;
+        std::scoped_lock stateLock(stateMutex);
+        const float multiplier = NativePowerMultiplier(actor, Now());
+        if (multiplier >= 1.0F) return;
+        // Keep one lock order on all paths, including recursive engine calls.
+        std::scoped_lock entryLock(nativePowerEntryMutex);
+        struct RestoreValue {
+            RE::BGSEntryPointFunctionDataOneValue* value;
+            float previous;
+            ~RestoreValue() { value->data = previous; }
+        } restore{nativePowerValue, nativePowerValue->data};
+        nativePowerValue->data = multiplier;
+        visitor.Visit(nativePowerEntry);
+        if (config.trace) SKSE::log::info("actor={:08X} action=native-power-cost-multiplier amount={}",
+            actor->GetFormID(), multiplier);
+    }
+
+    static void Install() {
+        REL::Relocation<std::uintptr_t> table{Player ? RE::VTABLE_PlayerCharacter[0] : RE::VTABLE_Character[0]};
+        // Documented Actor virtuals; VR has two additional preceding entries.
+        hasEntries = table.write_vfunc(REL::Module::IsVR() ? 0x101 : 0xFF, HasEntries);
+        forEach = table.write_vfunc(REL::Module::IsVR() ? 0x102 : 0x100, ForEach);
+    }
+};
+
 struct PotionForms {
     RE::BGSKeyword* keyword{nullptr};
     RE::EffectSetting* receipt{nullptr};
@@ -167,7 +264,7 @@ struct PotionForms {
 };
 PotionForms potionForms[6]{};
 bool potionFormsReady{false};
-std::uint64_t potionSession{0};
+std::uint64_t runtimeSession{0};
 std::uint64_t nextPotionRequest{0};
 
 // Skyrim retains keyword EDIDs. Other forms may return an empty EDID without
@@ -327,7 +424,7 @@ void QueuePotionReplacement(RE::Actor* actor, int tier) {
         std::scoped_lock lock(stateMutex);
         auto& state = State(actor, Now());
         request = ++nextPotionRequest;
-        session = potionSession;
+        session = runtimeSession;
         state.potionRequest = request;
         state.pendingPotionTier = tier;
         state.potionCastAttempted = false;
@@ -337,7 +434,7 @@ void QueuePotionReplacement(RE::Actor* actor, int tier) {
         {
             std::scoped_lock lock(stateMutex);
             const auto found = actors.find(id);
-            if (session != potionSession || found == actors.end() ||
+            if (session != runtimeSession || found == actors.end() ||
                 found->second.potionRequest != request) return;
         }
         const auto resolved = handle.get();
@@ -348,7 +445,7 @@ void QueuePotionReplacement(RE::Actor* actor, int tier) {
         if (!PotionGameplaySession() || !caster || !spell) {
             std::scoped_lock lock(stateMutex);
             const auto found = actors.find(id);
-            if (session == potionSession && found != actors.end() && found->second.potionRequest == request)
+            if (session == runtimeSession && found != actors.end() && found->second.potionRequest == request)
                 ClearPendingPotion(found->second);
             SKSE::log::warn("Potion replacement could not cast: actor={:08X}, tier={}, request={}", id, tier, request);
             return;
@@ -369,7 +466,7 @@ void QueuePotionReplacement(RE::Actor* actor, int tier) {
         {
             std::scoped_lock lock(stateMutex);
             const auto found = actors.find(id);
-            if (session != potionSession || found == actors.end() || found->second.potionRequest != request) return;
+            if (session != runtimeSession || found == actors.end() || found->second.potionRequest != request) return;
             found->second.potionActive = false;
             found->second.potionPercent = 0.0F;
             found->second.potionCastAttempted = true;
@@ -528,20 +625,15 @@ bool Begin(RE::Actor* actor, bool power, TimeMs now) {
     float customCost = 0.0F;
     const auto kind = Kind(actor, power, customCost);
     const float baseline = Stamina(actor);
-    // Power attack costs remain owned by the game. Positive stamina is required.
+    // Skyrim calculates power costs; the native perk path modifies that cost before debit.
     auto result = rules.beginAttack(actor->GetFormID(), ++state.stage, kind, baseline, now, 0.0F, customCost,
         ActiveCostMultiplier(actor, now));
-    state.freePowerPending = false;
-    state.freePowerStage = 0;
+    state.nativeCounter.clear();
     state.committed = false;
     state.denied = !result.accepted;
     state.nextStage = false;
-    if (result.freeCounterattack) {
-        state.freePowerPending = true;
-        state.freePowerBaseline = baseline;
-        state.freePowerStage = state.stage;
-        state.freePowerDeadline = now + config.rules.attackCommitTimeoutMs;
-    }
+    if (result.accepted && result.freeCounterattack)
+        state.nativeCounter.reserve(state.stage, now, config.rules.attackCommitTimeoutMs);
     ObserveExhaustion(actor, result.exhausted, now);
     Trace(actor, result.accepted ? "admit" : "reject", state.stage, result.nominalCost, static_cast<int>(result.reason));
     return result.accepted;
@@ -571,8 +663,7 @@ bool BeginBash(RE::Actor* actor, TimeMs now) {
     const float baseline = Stamina(actor);
     state.bashStage = ++state.stage;
     const auto result = rules.beginAttack(actorId, state.bashStage, AttackKind::Bash, baseline, now);
-    state.freePowerPending = false;
-    state.freePowerStage = 0;
+    state.nativeCounter.clear();
     state.committed = false;
     state.denied = !result.accepted;
     state.nextStage = false;
@@ -584,29 +675,6 @@ bool BeginBash(RE::Actor* actor, TimeMs now) {
     Trace(actor, result.accepted ? "bash-admit-engine-cost" : "bash-reject", state.stage, 0,
         static_cast<int>(result.reason));
     return result.accepted;
-}
-
-// Refunds the engine's power-attack drain for an armed free counterattack, once
-// the drop is observed. Only the stage that spent the reward can settle, so
-// light attacks and later stages cannot trigger the refund; stage zero means no
-// consuming begin has bound the refund yet. Caller must hold stateMutex.
-// Balance-based settlement cannot distinguish concurrent external stamina drains.
-// Keep its stage and time bounds explicit until native debit attribution is available.
-void SettleFreeCounterattack(RE::Actor* actor, ActorState& state, TimeMs now) {
-    if (!state.freePowerPending) return;
-    if (state.freePowerStage == 0 || state.stage != state.freePowerStage || state.denied ||
-        now > state.freePowerDeadline) {
-        state.freePowerPending = false;
-        state.freePowerStage = 0;
-        return;
-    }
-    if (!state.committed || !actor->IsPowerAttacking()) return;
-    const float drop = state.freePowerBaseline - Stamina(actor);
-    if (drop <= 0.0F) return;
-    state.freePowerPending = false;
-    state.freePowerStage = 0;
-    actor->AsActorValueOwner()->RestoreActorValue(RE::ActorValue::kStamina, drop);
-    Trace(actor, "counterattack-refund", state.stage, drop);
 }
 
 bool Commit(RE::Actor* actor, TimeMs now) {
@@ -621,6 +689,7 @@ bool Commit(RE::Actor* actor, TimeMs now) {
     if (result.duplicate) return state.committed && !state.denied;
     state.denied = !result.accepted;
     if (!result.accepted) {
+        state.nativeCounter.clear();
         Trace(actor, "reject-commit", state.stage, 0, static_cast<int>(result.reason));
         return false;
     }
@@ -639,7 +708,8 @@ bool Commit(RE::Actor* actor, TimeMs now) {
             if (process) process->UpdateRegenDelay(RE::ActorValue::kStamina, config.regenDelaySeconds);
         }
     }
-    if (result.freeCounterattack) SettleFreeCounterattack(actor, state, now);
+    if (result.freeCounterattack) state.nativeCounter.commit(state.stage, now);
+    else state.nativeCounter.clear();
     ObserveExhaustion(actor, rules.observeStamina(actor->GetFormID(), Stamina(actor), now).exhausted, now);
     Trace(actor, result.engineOwnsCost ? "commit-engine-cost" : "commit", state.stage, result.staminaDebit);
     return true;
@@ -657,8 +727,22 @@ void BlockEvent(RE::Actor* actor, bool blocking, TimeMs now) {
     if (rules.setBlocking(actor->GetFormID(), blocking, now)) Trace(actor, "perfect-window", 0, 0);
 }
 
+void RetireNativeCounter(RE::Actor* actor, std::string_view event) {
+    const bool ended = event == "attackstop" || event == "attackend" || event == "staggerstart" ||
+        event == "recoilstart" || event == "weaponsheathe";
+    const bool comboWindow = event == "attackwinstart" || event == "mco_winopen";
+    if (!ended && !comboWindow) return;
+    std::scoped_lock lock(stateMutex);
+    const auto found = actors.find(actor->GetFormID());
+    if (found != actors.end() && (ended || found->second.committed))
+        found->second.nativeCounter.clear();
+}
+
 bool IncomingEvent(RE::Actor* actor, std::string_view event) {
     const auto now = Now();
+    // Retirement also applies after an equipment/scope change; do this before
+    // the ranged and attack-management early returns.
+    RetireNativeCounter(actor, event);
     if (event == "blockstartout" || event == "sbf_blockstart") BlockEvent(actor, true, now);
     else if (event == "blockstop" || event == "blockstopout" || event == "sbf_blockstop" ||
         event == "staggerstart" || event == "recoilstart" || event == "weaponsheathe") BlockEvent(actor, false, now);
@@ -695,16 +779,14 @@ bool IncomingEvent(RE::Actor* actor, std::string_view event) {
     if (event == "attackwinstart" || event == "mco_winopen") {
         std::scoped_lock lock(stateMutex);
         auto& state = State(actor, now);
-        if (state.committed) state.nextStage = true;
-        SettleFreeCounterattack(actor, state, now);
+        if (state.committed) {
+            state.nextStage = true;
+            // A later query can now belong to the next combo input, before its
+            // Begin event arrives. Never lend that query the previous reward.
+            state.nativeCounter.clear();
+        }
     } else if (event == "prehitframe" || event == "weaponswing" || event == "weaponleftswing") {
         if (!Commit(actor, now)) return false;
-    } else if (event == "attackrelease") {
-        // MCO release fires between commit and winstart; the engine's power-attack
-        // debit can land here, so settle as soon as the drop is observable.
-        std::scoped_lock lock(stateMutex);
-        auto& state = State(actor, now);
-        SettleFreeCounterattack(actor, state, now);
     } else if (event == "attackstop" || event == "staggerstart" || event == "recoilstart") {
         std::scoped_lock lock(stateMutex);
         auto& state = State(actor, now);
@@ -717,15 +799,11 @@ bool IncomingEvent(RE::Actor* actor, std::string_view event) {
             rules.cancelAttack(actor->GetFormID(), state.stage, now);
         }
         state.nextStage = true;
-        SettleFreeCounterattack(actor, state, now);
+        state.nativeCounter.clear();
     } else if (event == "attackend") {
         std::scoped_lock lock(stateMutex);
         auto& state = State(actor, now);
-        SettleFreeCounterattack(actor, state, now);
-        if (state.stage == state.freePowerStage) {
-            state.freePowerPending = false;
-            state.freePowerStage = 0;
-        }
+        state.nativeCounter.clear();
     }
     return true;
 }
@@ -789,14 +867,14 @@ struct GraphHooks {
         // player's attack begin. Rolled once per begin, win or lose.
         if (request && actor->IsPlayerRef()) BashReactionRoll(actor, now);
         const bool result = notify(holder, name);
+        if (result) RetireNativeCounter(actor, event);
         if (result && (event == "blockstart" || event == "sbf_blockstart")) BlockEvent(actor, true, now);
         if (event == "blockstop" || event == "sbf_blockstop" || event == "staggerstart") BlockEvent(actor, false, now);
         if (request && !result) {
             std::scoped_lock lock(stateMutex);
             auto& state = State(actor, now);
             rules.cancelAttack(actor->GetFormID(), state.stage, now);
-            state.freePowerPending = false;
-            state.freePowerStage = 0;
+            state.nativeCounter.clear();
             state.nextStage = true;
             Trace(actor, "dispatch-failed", state.stage, 0);
         }
@@ -874,17 +952,6 @@ struct UpdateHooks {
                 StopDirector(actor, found->second);
             aiRules.resetActor(actor->GetFormID());
             return;
-        }
-        // Per-frame fallback for the free counterattack refund: the engine's
-        // power-attack debit can land after every graph settle point. The map
-        // is only mutated on the game thread, so the unlocked find is safe
-        // here; the settle re-checks the pending state under the lock.
-        {
-            const auto found = actors.find(actor->GetFormID());
-            if (found != actors.end() && found->second.freePowerPending) {
-                std::scoped_lock lock(stateMutex);
-                SettleFreeCounterattack(actor, found->second, Now());
-            }
         }
         if constexpr (!Player) DirectorTick(actor, Now());
         if constexpr (Player) {
@@ -1195,88 +1262,135 @@ RE::BGSSoundDescriptorForm* ResolveConfiguredSound(std::string_view spec, std::s
     return descriptor;
 }
 
-// Maps the defender's blocking gear to its 3D attachment node, mirroring the
-// engine's biped object slots. Returns null when no usable node is loaded.
+// Resolve the blocking gear for parry feedback. Left weapons occupy the
+// shield biped slot too; right-hand weapon slots do not
+// identify a dual-wield block's left weapon.
 RE::NiAVObject* BlockEffectNode(RE::Actor* defender, bool& shielded) {
-    if (!defender) return nullptr;
+    auto* left = defender->GetEquippedObject(true);
+    shielded = left && left->IsArmor();
     const auto& biped = defender->GetCurrentBiped();
     if (!biped) return nullptr;
     auto pick = [&](RE::BIPED_OBJECT slot) -> RE::NiAVObject* {
         if (slot == RE::BIPED_OBJECTS::kNone) return nullptr;
-        auto& part = biped->objects[slot].partClone;
-        return part ? part.get() : nullptr;
+        return biped->objects[slot].partClone.get();
     };
-    // A shield in the left hand always owns the block.
-    if (auto* left = defender->GetEquippedObject(true); left && left->IsArmor()) {
-        shielded = true;
+    if (left && (left->IsArmor() || left->IsWeapon())) {
         if (auto* node = pick(RE::BIPED_OBJECTS::kShield)) return node;
+        if (shielded) return nullptr;
     }
-    if (auto* right = defender->GetEquippedObject(false)) {
-        if (auto* weapon = right->As<RE::TESObjectWEAP>()) {
-            using WT = RE::WEAPON_TYPE;
-            RE::BIPED_OBJECT slot = RE::BIPED_OBJECTS::kNone;
-            switch (weapon->GetWeaponType()) {
-                case WT::kOneHandSword:  slot = RE::BIPED_OBJECTS::kOneHandSword;  break;
-                case WT::kOneHandAxe:   slot = RE::BIPED_OBJECTS::kOneHandAxe;   break;
-                case WT::kOneHandMace:  slot = RE::BIPED_OBJECTS::kOneHandMace;  break;
-                case WT::kOneHandDagger: slot = RE::BIPED_OBJECTS::kOneHandDagger; break;
-                case WT::kTwoHandAxe:
-                case WT::kTwoHandSword:
-                case WT::kHandToHandMelee: slot = RE::BIPED_OBJECTS::kTwoHandMelee; break;
-                default: break;
-            }
-            shielded = false;
-            if (auto* node = pick(slot)) return node;
-        }
+    auto* right = defender->GetEquippedObject(false);
+    auto* weapon = right ? right->As<RE::TESObjectWEAP>() : nullptr;
+    if (!weapon) return nullptr;
+    using WT = RE::WEAPON_TYPE;
+    switch (weapon->GetWeaponType()) {
+        case WT::kOneHandSword: return pick(RE::BIPED_OBJECTS::kOneHandSword);
+        case WT::kOneHandAxe: return pick(RE::BIPED_OBJECTS::kOneHandAxe);
+        case WT::kOneHandMace: return pick(RE::BIPED_OBJECTS::kOneHandMace);
+        case WT::kOneHandDagger: return pick(RE::BIPED_OBJECTS::kOneHandDagger);
+        case WT::kTwoHandAxe:
+        case WT::kTwoHandSword:
+        case WT::kHandToHandMelee: return pick(RE::BIPED_OBJECTS::kTwoHandMelee);
+        default: return nullptr;
     }
-    // Dual-wield/spell-blade blocks land on the left weapon.
-    if (auto* left = defender->GetEquippedObject(true)) {
-        if (auto* weapon = left->As<RE::TESObjectWEAP>()) {
-            shielded = false;
-            using WT = RE::WEAPON_TYPE;
-            switch (weapon->GetWeaponType()) {
-                case WT::kOneHandSword:  if (auto* n = pick(RE::BIPED_OBJECTS::kOneHandSword)) return n;  break;
-                case WT::kOneHandAxe:   if (auto* n = pick(RE::BIPED_OBJECTS::kOneHandAxe)) return n;   break;
-                case WT::kOneHandMace:  if (auto* n = pick(RE::BIPED_OBJECTS::kOneHandMace)) return n;  break;
-                case WT::kOneHandDagger: if (auto* n = pick(RE::BIPED_OBJECTS::kOneHandDagger)) return n; break;
-                default: break;
-            }
-        }
-    }
-    return nullptr;
 }
 
-void PlayParryFeedback(RE::Actor* attacker, RE::Actor* defender) {
-    if (!defender->IsPlayerRef() && !attacker->IsPlayerRef()) return;
-    bool shielded = defender->GetWornArmor(RE::BGSBipedObjectForm::BipedObjectSlot::kShield) != nullptr;
-    auto* node = BlockEffectNode(defender, shielded);
-    const auto position = node ? node->worldBound.center : defender->GetPosition();
+bool FiniteParryPoint(const RE::NiPoint3& point) {
+    return std::isfinite(point.x) && std::isfinite(point.y) && std::isfinite(point.z);
+}
 
-    // Positioned 3D playback: the clang originates from the blocking weapon or
-    // shield, not the listener, so distance and occlusion behave naturally.
-    auto* descriptor = shielded ? parrySoundShieldDesc : parrySoundWeaponDesc;
-    if (descriptor) {
-        if (auto* audio = RE::BSAudioManager::GetSingleton()) {
-            RE::BSSoundHandle handle{};
-            if (audio->GetSoundHandle(handle, descriptor, 0x16)) {
-                handle.SetPosition(position);
-                handle.SetVolume(parrySoundVolume);
-                handle.Play();
+RE::NiPoint3 ParryEffectPosition(RE::Actor* defender, RE::NiAVObject* gear,
+    const RE::NiPoint3& contact) {
+    const auto origin = defender->GetPosition();
+    // Precision supplies world-space game units already. Reject nonfinite or
+    // implausibly distant contacts instead of spawning in an unrelated cell.
+    const auto nearActor = [&](const RE::NiPoint3& point) {
+        return FiniteParryPoint(point) && point.GetSquaredDistance(origin) <= 512.0F * 512.0F;
+    };
+    // Precision's body contact can be below the guard. Anchor the block effect
+    // on the blocking weapon/shield, with the contact as a missing-node fallback.
+    if (gear && nearActor(gear->worldBound.center)) return gear->worldBound.center;
+    if (nearActor(contact)) return contact;
+    if (auto* root = defender->Get3D()) {
+        if (auto* chest = root->GetObjectByName("NPC Spine2 [Spn2]"); chest && nearActor(chest->world.translate))
+            return chest->world.translate;
+    }
+    return origin + RE::NiPoint3{0.0F, 0.0F, 70.0F};
+}
+
+RE::NiPoint3 ParryEffectDirection(RE::NiPoint3 direction, const RE::NiPoint3& fallback) {
+    const auto usable = [](const RE::NiPoint3& vector) {
+        const float lengthSquared = vector.SqrLength();
+        return FiniteParryPoint(vector) && std::isfinite(lengthSquared) && lengthSquared > 0.0001F;
+    };
+    if (!usable(direction)) direction = usable(fallback) ? fallback : RE::NiPoint3{0.0F, 1.0F, 0.0F};
+    direction.Unitize();
+    return direction;
+}
+
+void PlayParryFeedback(RE::Actor* attacker, RE::Actor* defender,
+    const RE::NiPoint3& contact, const RE::NiPoint3& hitDirection) {
+    if (!defender->IsPlayerRef() && !attacker->IsPlayerRef()) return;
+    auto* tasks = SKSE::GetTaskInterface();
+    if (!tasks) return;
+    const auto attackerHandle = attacker->GetHandle();
+    const auto defenderHandle = defender->GetHandle();
+    const auto* originalCell = defender->GetParentCell();
+    const RE::FormID cellID = originalCell ? originalCell->GetFormID() : 0;
+    const auto requestedAt = Now();
+    std::uint64_t session;
+    {
+        std::scoped_lock lock(stateMutex);
+        session = runtimeSession;
+    }
+    // Precision data and Havok/node pointers belong to the callback. Copy only
+    // vectors and handles; resolve scene objects when this main-thread task runs.
+    tasks->AddTask([attackerHandle, defenderHandle, contact, hitDirection, cellID, requestedAt, session]() {
+        {
+            std::scoped_lock lock(stateMutex);
+            if (session != runtimeSession) return;
+        }
+        const auto now = Now();
+        if (!StableGameplay() || now < requestedAt || now - requestedAt > 1000) return;
+        const auto target = defenderHandle.get();
+        auto* defender = target.get();
+        if (!defender || !defender->Is3DLoaded()) return;
+        auto* cell = defender->GetParentCell();
+        if (!cell || cell->GetFormID() != cellID) return;
+        bool shielded = false;
+        auto* gear = BlockEffectNode(defender, shielded);
+        const auto position = ParryEffectPosition(defender, gear, contact);
+        if (!FiniteParryPoint(position)) return;
+        const auto source = attackerHandle.get();
+        const auto fallbackDirection = source ? defender->GetPosition() - source->GetPosition()
+            : RE::NiPoint3{0.0F, 1.0F, 0.0F};
+        const auto direction = ParryEffectDirection(hitDirection, fallbackDirection);
+
+        // The clang and burst share the blocking gear's position.
+        auto* descriptor = shielded ? parrySoundShieldDesc : parrySoundWeaponDesc;
+        if (descriptor) {
+            if (auto* audio = RE::BSAudioManager::GetSingleton()) {
+                RE::BSSoundHandle sound{};
+                if (audio->GetSoundHandle(sound, descriptor, 0x16)) {
+                    sound.SetPosition(position);
+                    sound.SetVolume(parrySoundVolume);
+                    sound.Play();
+                }
             }
         }
-    }
-
-    if (!parryVisual || !node) return;
-    auto* cell = defender->GetParentCell();
-    if (!cell) return;
-    // Engine-driven spark: attaching the FXMetalSparkImpact01 root to the
-    // blocking weapon/shield node makes Skyrim fire its own vanilla metal-spark
-    // impact at that node, exactly like a real block. Same recipe Elden Parry
-    // uses; no custom spark/flare NIFs required.
-    const auto& rotate = node->world.rotate;
-    RE::BSTempEffectParticle::Spawn(cell, 0.0f,
-        shielded ? "ApexCombat\\impactShieldRoot.nif" : "ApexCombat\\impactWeaponRoot.nif",
-        rotate, position, 1.0f, 4U, node);
+        if (!parryVisual || config.parryVisualScale <= 0.0F) return;
+        auto* root = defender->Get3D();
+        if (!root) return;
+        const auto spawn = [&](const char* path, float fallbackLifetime) {
+            // Match the impact-effect spawn path: autonomous controllers start
+            // on the cloned model. Flag 0x4 derives lifetime from those controllers,
+            // so the ring asset itself has only short, finite controller ranges.
+            auto* effect = RE::BSTempEffectParticle::Spawn(cell, fallbackLifetime, path,
+                direction, position, config.parryVisualScale, 7U, root);
+            if (!effect && config.trace) SKSE::log::warn("Parry particle spawn failed: {}", path);
+        };
+        spawn("ApexCombat\\Parry\\PerfectBlockImpact.nif", 3.0F);
+        if (config.parryVisualRings) spawn("ApexCombat\\Parry\\PerfectRing.nif", 0.2F);
+    });
 }
 
 // HitData captures the weapon, power and block flags before damage processing
@@ -1350,9 +1464,6 @@ PRECISION_API::PreHitCallbackReturn PreHit(const PRECISION_API::PrecisionHitData
         if (result.staminaRestore > 0) defender->AsActorValueOwner()->RestoreActorValue(
             RE::ActorValue::kStamina, result.staminaRestore);
         if (rules.grantCounterattack(defender->GetFormID(), now)) {
-            defenderState.freePowerPending = true;
-            defenderState.freePowerBaseline = Stamina(defender);
-            defenderState.freePowerStage = 0;
             Trace(defender, "counterattack-grant", defenderState.hit, 0);
         }
         Trace(defender, "perfect-parry", defenderState.hit, result.staminaRestore);
@@ -1365,7 +1476,7 @@ PRECISION_API::PreHitCallbackReturn PreHit(const PRECISION_API::PrecisionHitData
     }
     // Only a perfect parry reaches this feedback. Graph callbacks can re-enter,
     // so send them after releasing the rules lock.
-    PlayParryFeedback(attacker, defender);
+    PlayParryFeedback(attacker, defender, hit.hitPos, hit.hitPointVelocity);
     defender->NotifyAnimationGraph("Apex_PerfectParry");
     attacker->NotifyAnimationGraph(attackerPoise.broke ? "staggerStart" : "recoilStart");
     FlashPoiseResult(attacker, attackerPoise);
@@ -1502,7 +1613,7 @@ class LifecycleEvents final : public RE::BSTEventSink<RE::TESObjectLoadedEvent>,
                 rules.resetSession();
                 poiseRules.resetSession();
                 aiRules.resetSession();
-                ++potionSession;
+                ++runtimeSession;
                 actors.clear();
                 RestoreSprintDrain();
             }
@@ -1546,6 +1657,16 @@ bool InitializeRuntime() {
     if (config.aiSettings.bashStaminaCost != 0.0F)
         SKSE::log::warn("director.bashStaminaCost is deprecated and ignored; Skyrim owns bash stamina costs.");
     if (!config.enabled) { SKSE::log::info("Disabled in configuration."); return true; }
+    nativePowerReady = ResolveNativePowerCost();
+    if (nativePowerReady) {
+        NativePowerHooks<false>::Install();
+        NativePowerHooks<true>::Install();
+    } else {
+        config.rules.counterattackEnabled = false;
+        rules.setSettings(config.rules);
+        SKSE::log::warn("Native power-cost modifiers and free counterattacks disabled: "
+            "ApexCombat.esp requires the unchanged ApexPowerAttackCost template (local ID 0x802).");
+    }
     GraphHooks<false>::Install();
     GraphHooks<true>::Install();
     UpdateHooks<false>::Install();
@@ -1563,6 +1684,8 @@ bool InitializeRuntime() {
         precisionReady = api->AddPreHitCallback(SKSE::GetPluginHandle(), PreHit) == PRECISION_API::APIResult::OK;
         precisionPostHitReady = api->AddPostHitCallback(SKSE::GetPluginHandle(), PostHit) == PRECISION_API::APIResult::OK;
     }
+    SKSE::log::info("Native power-cost modifier={}; free counterattack={}",
+        nativePowerReady, config.rules.counterattackEnabled);
     SKSE::log::info("Precision accepted-hit poise and retaliation callbacks={}", precisionPostHitReady);
     if ((config.poise || config.director) && !precisionPostHitReady)
         SKSE::log::warn("Accepted-hit poise and retaliation require a compatible Precision post-hit API.");
@@ -1597,7 +1720,7 @@ void ResetSession() {
     rules.resetSession();
     poiseRules.resetSession();
     aiRules.resetSession();
-    ++potionSession;
+    ++runtimeSession;
     actors.clear();
     // A session change while a discount is active must not strand the scaled
     // sprint-drain game setting.

@@ -90,6 +90,7 @@ bool knownKey(std::string_view key)
            key == "perfectblock.rearmdelayms" || key == "perfectblock.blockangledegrees" ||
            key == "perfectblock.parrysoundweapon" || key == "perfectblock.parrysoundshield" ||
            key == "perfectblock.parrysoundvolume" || key == "perfectblock.parryvisual" ||
+           key == "perfectblock.parryvisualscale" || key == "perfectblock.parryvisualrings" ||
            key == "counterattack.enabled" || key == "counterattack.windowms" ||
            key == "poise.enabled" || key == "poise.maxpoise" ||
            key == "poise.daggerdamage" || key == "poise.sworddamage" ||
@@ -181,6 +182,9 @@ bool apply(Configuration& config, const std::string& key, std::string_view value
     if (key == "counterattack.windowms")
         return number(value, Core::TimeMs{1}, Core::TimeMs{10000}, rules.counterattackWindowMs);
     if (key == "perfectblock.parryvisual") return boolean(value, config.parryVisual);
+    if (key == "perfectblock.parryvisualscale")
+        return number(value, 0.25F, 3.0F, config.parryVisualScale);
+    if (key == "perfectblock.parryvisualrings") return boolean(value, config.parryVisualRings);
     if (key == "poise.enabled") return boolean(value, config.poise);
     if (key == "poise.hud") return boolean(value, config.poiseHud);
     if (key == "poise.maxpoise") return number(value, 1.0F, 100000.0F, config.poiseSettings.maxPoise);

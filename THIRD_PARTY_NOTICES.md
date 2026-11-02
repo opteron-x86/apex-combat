@@ -1,6 +1,6 @@
 # Third-party notices
 
-Apex Combat statically incorporates or links the following third-party software. Each item below is used as a library dependency; no third-party game content is distributed with this plugin.
+Apex Combat statically incorporates or links the following third-party software. Each item below is used as a library dependency.
 
 ## CommonLibSSE-NG
 
